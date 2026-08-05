@@ -1,0 +1,59 @@
+import mongoose from 'mongoose'
+import { ContractInstallment } from '../models/ContractInstallment.js'
+import { Payment } from '../models/Payment.js'
+import { ApiResponse } from '../utils/response.js'
+
+class DebtorController {
+  list = async (req, res, next) => {
+    try {
+      const now = new Date()
+      const currentKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+      const requestedPeriod = /^\d{4}-\d{2}$/.test(String(req.query.period || '')) ? String(req.query.period) : currentKey
+      const isFuturePeriod = requestedPeriod > currentKey
+      const allInstallments = await ContractInstallment.find({ periodKey: requestedPeriod })
+        .populate({ path: 'student', select: 'fullName phone parentPhone photo university faculty course', populate: [{ path: 'university', select: 'name' }, { path: 'faculty', select: 'name' }] })
+        .populate({ path: 'contract', select: 'contractNumber status room startDate endDate paymentType', populate: { path: 'room', select: 'roomNumber block floor' } })
+        .sort({ dueDate: 1 })
+      const installments = allInstallments.filter((item) => item.paidAmount < item.amount)
+
+      const studentIds = [...new Set(installments.map((item) => item.student?._id?.toString()).filter(Boolean))]
+      const paymentRows = await Payment.find({ student: { $in: studentIds.map((id) => new mongoose.Types.ObjectId(id)) } })
+        .select('student contract amount method note allocations createdAt')
+        .populate('contract', 'contractNumber')
+        .populate('allocations.installment', 'periodKey')
+        .sort({ createdAt: -1 })
+      const paymentsByStudent = new Map()
+      paymentRows.forEach((payment) => { const key = payment.student.toString(); if (!paymentsByStudent.has(key)) paymentsByStudent.set(key, []); paymentsByStudent.get(key).push(payment) })
+      const grouped = new Map()
+      for (const item of installments) {
+        if (!item.student || !item.contract) continue
+        const key = item.student._id.toString()
+        if (!grouped.has(key)) grouped.set(key, { student: item.student, contracts: new Map(), periods: [], totalDebt: 0, overdueDebt: 0, currentDebt: 0, paidTowardsDebt: 0 })
+        const debtor = grouped.get(key)
+        const debt = Math.max(0, item.amount - item.paidAmount)
+        debtor.periods.push({ id: item.id, contractId: item.contract.id, contractNumber: item.contract.contractNumber, periodKey: item.periodKey, dueDate: item.dueDate, amount: item.amount, paidAmount: item.paidAmount, debt, status: item.status, room: item.contract.room })
+        debtor.contracts.set(item.contract.id, item.contract)
+        debtor.totalDebt += debt
+        debtor.paidTowardsDebt += item.paidAmount
+        if (item.periodKey < currentKey) debtor.overdueDebt += debt
+        else if (!isFuturePeriod) debtor.currentDebt += debt
+      }
+      const debtors = [...grouped.values()].map((item) => {
+        const paymentHistory = paymentsByStudent.get(item.student.id) || []
+        const lastPayment = paymentHistory[0]
+        return { ...item, contracts: [...item.contracts.values()], periodCount: item.periods.length, oldestDueDate: item.periods[0]?.dueDate, lastPaymentAt: lastPayment?.createdAt || null, lastPaymentAmount: lastPayment?.amount || 0, paymentHistory, debtStatus: item.paidTowardsDebt > 0 ? 'partial' : 'unpaid' }
+      }).sort((a, b) => b.totalDebt - a.totalDebt)
+      const scheduledAmount = allInstallments.reduce((sum, item) => sum + item.amount, 0)
+      const paidAmount = allInstallments.reduce((sum, item) => sum + item.paidAmount, 0)
+      const outstanding = debtors.reduce((sum, item) => sum + item.totalDebt, 0)
+      const paidByStudent = new Map()
+      allInstallments.forEach((item) => { if (item.student) paidByStudent.set(item.student.id, (paidByStudent.get(item.student.id) || 0) + item.paidAmount) })
+      const paidStudentCount = [...paidByStudent.values()].filter((amount) => amount > 0).length
+      const noPaymentStudentCount = [...paidByStudent.values()].filter((amount) => amount <= 0).length
+      const summary = { debtorCount: isFuturePeriod ? 0 : debtors.length, waitingCount: isFuturePeriod ? debtors.length : 0, totalDebt: isFuturePeriod ? 0 : outstanding, waitingAmount: isFuturePeriod ? outstanding : 0, scheduledAmount, paidAmount, paidStudentCount, noPaymentStudentCount, overdueDebt: debtors.reduce((sum, item) => sum + item.overdueDebt, 0), partialCount: debtors.filter((item) => item.debtStatus === 'partial').length, unpaidCount: debtors.filter((item) => item.debtStatus === 'unpaid').length }
+      return ApiResponse.ok(res, { debtors, summary, selectedPeriod: requestedPeriod, currentPeriod: currentKey, isFuturePeriod })
+    } catch (error) { return next(error) }
+  }
+}
+
+export const debtorController = new DebtorController()
