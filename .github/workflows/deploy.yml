@@ -1,0 +1,75 @@
+name: Deploy backend
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: production-backend
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to production server
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p "${SSH_PORT:-22}" -H "$SSH_HOST" >> ~/.ssh/known_hosts
+
+      - name: Pull, install dependencies, and restart
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          ssh -i ~/.ssh/deploy_key \
+            -p "${SSH_PORT:-22}" \
+            "$SSH_USER@$SSH_HOST" \
+            'bash -se' <<'DEPLOY_SCRIPT'
+          set -Eeuo pipefail
+
+          APP_DIR=/root/hostel-tizimplus
+          APP_NAME=hostel-tizimplus-backend
+
+          cd "$APP_DIR"
+
+          old_lock_hash=''
+          if [ -f package-lock.json ]; then
+            old_lock_hash="$(sha256sum package-lock.json | cut -d ' ' -f 1)"
+          fi
+
+          git pull --ff-only origin main
+
+          new_lock_hash=''
+          if [ -f package-lock.json ]; then
+            new_lock_hash="$(sha256sum package-lock.json | cut -d ' ' -f 1)"
+          fi
+
+          if [ ! -d node_modules ] || [ "$old_lock_hash" != "$new_lock_hash" ]; then
+            npm ci --omit=dev
+          fi
+
+          if ! command -v pm2 >/dev/null 2>&1; then
+            npm install --global pm2
+          fi
+
+          if pm2 describe "$APP_NAME" >/dev/null 2>&1; then
+            pm2 reload ecosystem.config.cjs --only "$APP_NAME" --update-env
+          else
+            pm2 start ecosystem.config.cjs --only "$APP_NAME"
+          fi
+
+          pm2 save
+          DEPLOY_SCRIPT
