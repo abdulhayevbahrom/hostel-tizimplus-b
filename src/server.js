@@ -4,6 +4,7 @@ import { Server } from 'socket.io'
 import { app } from './app.js'
 import { connectDatabase } from './config/db.js'
 import { scheduleDailyContractSync, syncContractStatuses } from './utils/contractStatus.js'
+import { normalizeStoredPhoneNumbers } from './utils/normalizePhoneNumbers.js'
 
 const port = Number(process.env.PORT || 5000)
 const httpServer = createServer(app)
@@ -22,6 +23,7 @@ io.on('connection', (socket) => {
 
 try {
   await connectDatabase()
+  await normalizeStoredPhoneNumbers()
   await syncContractStatuses()
   scheduleDailyContractSync(io)
   httpServer.listen(port, () => console.log(`API va WebSocket http://localhost:${port} manzilida ishlamoqda`))

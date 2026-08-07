@@ -24,7 +24,7 @@ class GeneralSettingController {
         { key: 'general' },
         {
           hostelName: String(req.body.hostelName || '').trim(),
-          organizationPhone: String(req.body.organizationPhone || '').trim(),
+          organizationPhone: String(req.body.organizationPhone || '').replace(/\D/g, '').replace(/^998(?=\d{9}$)/, ''),
           organizationAddress: String(req.body.organizationAddress || '').trim(),
           receiptThankYou: String(req.body.receiptThankYou || '').trim(),
           logo,

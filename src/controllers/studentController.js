@@ -38,11 +38,12 @@ class StudentController {
   }
 
   cleanPayload(body) {
+    const normalizePhone = (value) => String(value || '').replace(/\D/g, '').replace(/^998(?=\d{9}$)/, '')
     return {
       fullName: String(body.fullName || '').trim(),
-      phone: String(body.phone || '').replace(/\s/g, ''),
+      phone: normalizePhone(body.phone),
       gender: body.gender,
-      parentPhone: String(body.parentPhone || '').replace(/\s/g, ''),
+      parentPhone: normalizePhone(body.parentPhone),
       university: body.university,
       faculty: body.faculty,
       address: String(body.address || '').trim(),
@@ -52,15 +53,48 @@ class StudentController {
       disciplinaryStatus: body.disciplinaryStatus || 'clear',
       disciplinaryNote: body.disciplinaryStatus === 'blacklisted' ? String(body.disciplinaryNote || '').trim() : '',
       disabilityStatus: body.disabilityStatus || 'none',
-      jshr: String(body.jshr || '').replace(/\D/g, ''),
-      passportSeries: String(body.passportSeries || '').trim().toUpperCase(),
-      passportNumber: String(body.passportNumber || '').replace(/\D/g, ''),
+      jshr: String(body.jshr || '').replace(/\D/g, '') || undefined,
+      passportSeries: String(body.passportSeries || '').trim().toUpperCase() || undefined,
+      passportNumber: String(body.passportNumber || '').replace(/\D/g, '') || undefined,
     }
   }
 
-  async validateEducation(payload, res) {
-    if (!mongoose.isValidObjectId(payload.university) || !(await University.exists({ _id: payload.university }))) return ApiResponse.badRequest(res, 'Universitetni to‘g‘ri tanlang')
-    if (!mongoose.isValidObjectId(payload.faculty) || !(await Faculty.exists({ _id: payload.faculty, university: payload.university }))) return ApiResponse.badRequest(res, 'Tanlangan fakultet bu universitetga tegishli emas')
+  async resolveEducation(payload, req, res) {
+    const universityValue = String(payload.university || '').trim()
+    const facultyValue = String(payload.faculty || '').trim()
+    if (!universityValue || universityValue.length > 150) return ApiResponse.badRequest(res, 'Universitet nomini kiriting')
+    if (!facultyValue || facultyValue.length > 150) return ApiResponse.badRequest(res, 'Fakultet nomini kiriting')
+
+    let university = mongoose.isValidObjectId(universityValue) ? await University.findById(universityValue) : null
+    if (!university) {
+      const escapedName = universityValue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      university = await University.findOne({ name: { $regex: `^${escapedName}$`, $options: 'i' } })
+    }
+    if (!university) {
+      try { university = await University.create({ name: universityValue, shortName: '' }) }
+      catch (error) {
+        if (error?.code !== 11000) throw error
+        university = await University.findOne({ name: universityValue })
+      }
+      req.app.get('io')?.emit('directories:changed', { resource: 'universities', action: 'created', id: university.id })
+    }
+
+    let faculty = mongoose.isValidObjectId(facultyValue) ? await Faculty.findOne({ _id: facultyValue, university: university._id }) : null
+    if (!faculty) {
+      const escapedName = facultyValue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      faculty = await Faculty.findOne({ university: university._id, name: { $regex: `^${escapedName}$`, $options: 'i' } })
+    }
+    if (!faculty) {
+      try { faculty = await Faculty.create({ name: facultyValue, university: university._id }) }
+      catch (error) {
+        if (error?.code !== 11000) throw error
+        faculty = await Faculty.findOne({ university: university._id, name: facultyValue })
+      }
+      req.app.get('io')?.emit('directories:changed', { resource: 'faculties', action: 'created', id: faculty.id })
+    }
+
+    payload.university = university._id
+    payload.faculty = faculty._id
     return null
   }
 
@@ -69,12 +103,18 @@ class StudentController {
   }
 
   findBlacklist(payload) {
-    return BlacklistEntry.findOne({ active: true, $or: [{ jshr: payload.jshr }, { passportSeries: payload.passportSeries, passportNumber: payload.passportNumber }] })
+    const identities = []
+    if (payload.jshr) identities.push({ jshr: payload.jshr })
+    if (payload.passportSeries && payload.passportNumber) identities.push({ passportSeries: payload.passportSeries, passportNumber: payload.passportNumber })
+    return identities.length ? BlacklistEntry.findOne({ active: true, $or: identities }) : null
   }
 
   async syncBlacklist(student) {
     const identity = { jshr: student.jshr, passportSeries: student.passportSeries, passportNumber: student.passportNumber }
-    const entry = await BlacklistEntry.findOne({ $or: [{ sourceStudent: student._id }, { jshr: student.jshr }, { passportSeries: student.passportSeries, passportNumber: student.passportNumber }] })
+    const identities = [{ sourceStudent: student._id }]
+    if (student.jshr) identities.push({ jshr: student.jshr })
+    if (student.passportSeries && student.passportNumber) identities.push({ passportSeries: student.passportSeries, passportNumber: student.passportNumber })
+    const entry = await BlacklistEntry.findOne({ $or: identities })
     if (student.disciplinaryStatus === 'blacklisted') {
       if (entry) {
         entry.set({ ...identity, reason: student.disciplinaryNote, sourceStudent: student._id, active: true })
@@ -152,7 +192,7 @@ class StudentController {
   create = async (req, res, next) => {
     try {
       const payload = this.cleanPayload(req.body)
-      if (await this.validateEducation(payload, res)) return undefined
+      if (await this.resolveEducation(payload, req, res)) return undefined
       if (payload.disciplinaryStatus === 'blacklisted' && !payload.disciplinaryNote) return ApiResponse.badRequest(res, 'Qora ro‘yxat sababini kiriting')
       const blocked = await this.findBlacklist(payload)
       if (blocked) return ApiResponse.conflict(res, `Bu shaxs qora ro‘yxatda: ${blocked.reason}`)
@@ -171,7 +211,7 @@ class StudentController {
       const student = await Student.findById(req.params.id)
       if (!student) return ApiResponse.notFound(res, 'Talaba topilmadi')
       const payload = this.cleanPayload(req.body)
-      if (await this.validateEducation(payload, res)) return undefined
+      if (await this.resolveEducation(payload, req, res)) return undefined
       if (payload.disciplinaryStatus === 'blacklisted' && !payload.disciplinaryNote) return ApiResponse.badRequest(res, 'Qora ro‘yxat sababini kiriting')
       const blocked = await this.findBlacklist(payload)
       if (blocked && blocked.sourceStudent?.toString() !== student.id) return ApiResponse.conflict(res, `Bu shaxs qora ro‘yxatda: ${blocked.reason}`)
