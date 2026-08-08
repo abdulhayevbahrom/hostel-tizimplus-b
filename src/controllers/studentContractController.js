@@ -153,6 +153,22 @@ class StudentContractController {
       tomorrow.setDate(tomorrow.getDate() + 1);
       const filter = { status: "active", startDate: { $lt: tomorrow }, endDate: { $gte: today } };
       if (mongoose.isValidObjectId(req.query.room)) filter.room = req.query.room;
+      const currentPeriod = `${today.getUTCFullYear()}-${String(today.getUTCMonth() + 1).padStart(2, "0")}`;
+      const [summaryRows, currentMonthRows] = await Promise.all([
+        StudentContract.aggregate([
+          { $group: { _id: "$status", count: { $sum: 1 } } },
+        ]),
+        ContractInstallment.aggregate([
+          { $match: { periodKey: currentPeriod } },
+          { $group: { _id: null, amount: { $sum: "$amount" } } },
+        ]),
+      ]);
+      const summary = summaryRows.reduce((result, row) => {
+        result.total += row.count;
+        if (Object.prototype.hasOwnProperty.call(result, row._id)) result[row._id] = row.count;
+        return result;
+      }, { total: 0, active: 0, completed: 0, cancelled: 0, amount: 0 });
+      summary.amount = currentMonthRows[0]?.amount || 0;
       const contracts = await StudentContract.find(filter)
         .populate({ path: "student", select: "fullName phone parentPhone photo university faculty course gender", populate: [{ path: "university", select: "name shortName" }, { path: "faculty", select: "name" }] })
         .populate("room", "roomNumber block floor")
@@ -160,12 +176,23 @@ class StudentContractController {
       const search = String(req.query.search || "").trim().toLowerCase();
       let rows = contracts.filter((contract) => contract.student && contract.room);
       if (search) rows = rows.filter((contract) => `${contract.student.fullName} ${contract.student.phone} ${contract.contractNumber} ${contract.room.block} ${contract.room.roomNumber}`.toLowerCase().includes(search));
+      const warningLimit = new Date(today);
+      warningLimit.setDate(warningLimit.getDate() + 3);
+      rows.sort((first, second) => {
+        const firstEnd = new Date(first.endDate).getTime();
+        const secondEnd = new Date(second.endDate).getTime();
+        const firstWarning = firstEnd < warningLimit.getTime();
+        const secondWarning = secondEnd < warningLimit.getTime();
+        if (firstWarning !== secondWarning) return firstWarning ? -1 : 1;
+        if (firstWarning && firstEnd !== secondEnd) return firstEnd - secondEnd;
+        return new Date(second.createdAt).getTime() - new Date(first.createdAt).getTime();
+      });
       const total = rows.length;
       const limit = 25;
       const totalPages = Math.max(1, Math.ceil(total / limit));
       const page = Math.min(Math.max(1, Number.parseInt(req.query.page, 10) || 1), totalPages);
       rows = rows.slice((page - 1) * limit, page * limit);
-      return ApiResponse.ok(res, { contracts: rows, pagination: { page, limit, total, totalPages } });
+      return ApiResponse.ok(res, { contracts: rows, summary, pagination: { page, limit, total, totalPages } });
     } catch (error) {
       return next(error);
     }
@@ -175,6 +202,8 @@ class StudentContractController {
     try {
       const payload = this.cleanPayload(req.body);
       payload.status = "active";
+      if (!Number.isFinite(payload.paymentAmount) || payload.paymentAmount <= 0)
+        return ApiResponse.badRequest(res, "To‘lov summasi 0 dan katta bo‘lishi kerak");
       if (!mongoose.isValidObjectId(payload.student))
         return ApiResponse.badRequest(res, "Talabani to‘g‘ri tanlang");
       if (await this.validateRoom(payload, res)) return undefined;
@@ -200,6 +229,8 @@ class StudentContractController {
       const existing = await StudentContract.findById(req.params.id);
       if (!existing) return ApiResponse.notFound(res, "Shartnoma topilmadi");
       const payload = this.cleanPayload(req.body);
+      if (!Number.isFinite(payload.paymentAmount) || payload.paymentAmount <= 0)
+        return ApiResponse.badRequest(res, "To‘lov summasi 0 dan katta bo‘lishi kerak");
       if (existing.status === "completed")
         return ApiResponse.conflict(
           res,

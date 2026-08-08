@@ -12,7 +12,7 @@ class RoomController {
       block: String(body.block || '').trim(),
       floor: Number(body.floor),
       capacity: Number(body.capacity),
-      category: body.category || 'standart',
+      category: body.category || '',
       gender: body.gender,
       status: body.status || 'available',
       note: String(body.note || '').trim(),
@@ -26,8 +26,12 @@ class RoomController {
 
   list = async (req, res, next) => {
     try {
+      const todayStart = new Date()
+      todayStart.setHours(0, 0, 0, 0)
+      const todayEnd = new Date(todayStart)
+      todayEnd.setDate(todayEnd.getDate() + 1)
       const roomDocuments = await Room.find().sort({ block: 1, floor: 1, roomNumber: 1 })
-      const occupied = await StudentContract.aggregate([{ $match: { status: 'active' } }, { $group: { _id: '$room', count: { $sum: 1 } } }])
+      const occupied = await StudentContract.aggregate([{ $match: { status: 'active', startDate: { $lt: todayEnd }, endDate: { $gte: todayStart } } }, { $group: { _id: '$room', count: { $sum: 1 } } }])
       const occupiedByRoom = new Map(occupied.map((item) => [item._id.toString(), item.count]))
       const rooms = roomDocuments.map((room) => ({ ...room.toJSON(), occupiedCount: occupiedByRoom.get(room.id) || 0 }))
       const summary = rooms.reduce((result, room) => {
@@ -56,7 +60,11 @@ class RoomController {
       if (!mongoose.isValidObjectId(req.params.id)) return ApiResponse.notFound(res, 'Xona topilmadi')
       const room = await Room.findById(req.params.id)
       if (!room) return ApiResponse.notFound(res, 'Xona topilmadi')
-      const contracts = await StudentContract.find({ room: room._id, status: 'active' })
+      const todayStart = new Date()
+      todayStart.setHours(0, 0, 0, 0)
+      const todayEnd = new Date(todayStart)
+      todayEnd.setDate(todayEnd.getDate() + 1)
+      const contracts = await StudentContract.find({ room: room._id, status: 'active', startDate: { $lt: todayEnd }, endDate: { $gte: todayStart } })
         .populate({ path: 'student', select: 'fullName phone parentPhone photo university faculty course gender', populate: [{ path: 'university', select: 'name' }, { path: 'faculty', select: 'name' }] })
         .sort({ startDate: 1 })
       const students = contracts.filter((item) => item.student).map((contract) => ({ student: contract.student, contract: { id: contract.id, contractNumber: contract.contractNumber, startDate: contract.startDate, endDate: contract.endDate, paymentType: contract.paymentType, paymentAmount: contract.paymentAmount } }))
@@ -67,7 +75,7 @@ class RoomController {
   create = async (req, res, next) => {
     try {
       const payload = this.cleanPayload(req.body)
-      if (!(await BuildingBlock.exists({ name: payload.block }))) return ApiResponse.badRequest(res, 'Bino yoki blokni sozlamalardan tanlang')
+      if (payload.block && !(await BuildingBlock.exists({ name: payload.block }))) return ApiResponse.badRequest(res, 'Bino yoki blokni sozlamalardan tanlang')
       if ((req.files?.length || 0) > 8) return ApiResponse.badRequest(res, 'Eng ko‘pi 8 ta rasm yuklash mumkin')
       payload.images = await uploadImages(req.files)
       const room = await Room.create(payload)
@@ -82,7 +90,7 @@ class RoomController {
       const room = await Room.findById(req.params.id)
       if (!room) return ApiResponse.notFound(res, 'Xona topilmadi')
       const payload = this.cleanPayload(req.body)
-      if (!(await BuildingBlock.exists({ name: payload.block }))) return ApiResponse.badRequest(res, 'Bino yoki blokni sozlamalardan tanlang')
+      if (payload.block && !(await BuildingBlock.exists({ name: payload.block }))) return ApiResponse.badRequest(res, 'Bino yoki blokni sozlamalardan tanlang')
       if (payload.images.length + (req.files?.length || 0) > 8) return ApiResponse.badRequest(res, 'Eng ko‘pi 8 ta rasm saqlash mumkin')
       const uploadedImages = await uploadImages(req.files)
       room.set({ ...payload, images: [...payload.images, ...uploadedImages] })

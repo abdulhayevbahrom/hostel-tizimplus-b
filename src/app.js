@@ -17,6 +17,8 @@ import { fineRouter } from './routes/fineRoutes.js'
 import { salaryRouter } from './routes/salaryRoutes.js'
 import { dashboardRouter } from './routes/dashboardRoutes.js'
 import { reportRouter } from './routes/reportRoutes.js'
+import { notificationRouter } from './routes/notificationRoutes.js'
+import { cashSessionRouter } from './routes/cashSessionRoutes.js'
 import { ApiResponse } from './utils/response.js'
 
 export const app = express()
@@ -42,15 +44,15 @@ app.use('/api/fines', fineRouter)
 app.use('/api/salaries', salaryRouter)
 app.use('/api/dashboard', dashboardRouter)
 app.use('/api/reports', reportRouter)
+app.use('/api/notifications', notificationRouter)
+app.use('/api/cash-sessions', cashSessionRouter)
 
 app.use((_req, res) => ApiResponse.notFound(res, 'API manzili topilmadi'))
 app.use((error, _req, res, _next) => {
   console.error(error)
   if (error?.code === 11000) {
     const message = error.keyPattern?.roomNumber
-      ? 'Bu xona raqami avval kiritilgan'
-      : error.keyPattern?.contractNumber
-        ? 'Bu shartnoma raqami avval kiritilgan'
+      ? 'Bu bino yoki blokning shu qavatida bunday xona raqami mavjud'
       : error.keyPattern?.login
         ? 'Bu login avval ro‘yxatdan o‘tgan'
         : error.keyPattern?.jshr

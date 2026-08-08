@@ -48,8 +48,12 @@ class StudentController {
       faculty: body.faculty,
       address: String(body.address || '').trim(),
       course: Number(body.course),
+      educationType: ['daytime', 'evening', 'extramural', 'employed'].includes(body.educationType) ? body.educationType : 'daytime',
+      hasTemporaryRegistration: body.hasTemporaryRegistration === true || body.hasTemporaryRegistration === 'true',
+      temporaryRegistrationMonths: body.hasTemporaryRegistration === true || body.hasTemporaryRegistration === 'true' ? Number(body.temporaryRegistrationMonths) : null,
       studentStatus: ['green', 'warning', 'red'].includes(body.studentStatus) ? body.studentStatus : 'green',
       hasTaxContract: body.hasTaxContract === true || body.hasTaxContract === 'true',
+      taxContractType: body.hasTaxContract === true || body.hasTaxContract === 'true' ? String(body.taxContractType || '') : '',
       disciplinaryStatus: body.disciplinaryStatus || 'clear',
       disciplinaryNote: body.disciplinaryStatus === 'blacklisted' ? String(body.disciplinaryNote || '').trim() : '',
       disabilityStatus: body.disabilityStatus || 'none',
@@ -59,11 +63,22 @@ class StudentController {
     }
   }
 
+  validateConditionalFields(payload, res) {
+    if (payload.hasTemporaryRegistration && (!Number.isInteger(payload.temporaryRegistrationMonths) || payload.temporaryRegistrationMonths < 1 || payload.temporaryRegistrationMonths > 12)) return ApiResponse.badRequest(res, 'Vaqtinchalik propiska muddatini 1 dan 12 oygacha kiriting')
+    if (payload.hasTaxContract && !['student_contract', 'standard_contract'].includes(payload.taxContractType)) return ApiResponse.badRequest(res, 'Soliq shartnomasi turini tanlang')
+    return null
+  }
+
   async resolveEducation(payload, req, res) {
     const universityValue = String(payload.university || '').trim()
     const facultyValue = String(payload.faculty || '').trim()
-    if (!universityValue || universityValue.length > 150) return ApiResponse.badRequest(res, 'Universitet nomini kiriting')
-    if (!facultyValue || facultyValue.length > 150) return ApiResponse.badRequest(res, 'Fakultet nomini kiriting')
+    if (!universityValue) {
+      payload.university = null
+      payload.faculty = null
+      return null
+    }
+    if (universityValue.length > 150) return ApiResponse.badRequest(res, 'Universitet nomi 150 ta belgidan oshmasin')
+    if (facultyValue.length > 150) return ApiResponse.badRequest(res, 'Fakultet nomi 150 ta belgidan oshmasin')
 
     let university = mongoose.isValidObjectId(universityValue) ? await University.findById(universityValue) : null
     if (!university) {
@@ -77,6 +92,12 @@ class StudentController {
         university = await University.findOne({ name: universityValue })
       }
       req.app.get('io')?.emit('directories:changed', { resource: 'universities', action: 'created', id: university.id })
+    }
+
+    if (!facultyValue) {
+      payload.university = university._id
+      payload.faculty = null
+      return null
     }
 
     let faculty = mongoose.isValidObjectId(facultyValue) ? await Faculty.findOne({ _id: facultyValue, university: university._id }) : null
@@ -162,7 +183,10 @@ class StudentController {
       const course = Number.parseInt(req.query.course, 10)
       if (course >= 1 && course <= 6) filter.course = course
       if (mongoose.isValidObjectId(req.query.room)) {
-        const studentIds = await StudentContract.distinct('student', { room: req.query.room, status: 'active' })
+        const now = new Date()
+        const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+        const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999)
+        const studentIds = await StudentContract.distinct('student', { room: req.query.room, status: 'active', startDate: { $lte: todayEnd }, endDate: { $gte: todayStart } })
         filter._id = { $in: studentIds }
       }
       const limit = 25
@@ -176,7 +200,14 @@ class StudentController {
         .sort({ createdAt: -1 })
         .skip((currentPage - 1) * limit)
         .limit(limit)
-      return ApiResponse.ok(res, { students, pagination: { page: currentPage, limit, total, totalPages } })
+      const today = new Date()
+      today.setUTCHours(0, 0, 0, 0)
+      const todayEnd = new Date(today)
+      todayEnd.setUTCHours(23, 59, 59, 999)
+      const activeContracts = await StudentContract.find({ student: { $in: students.map((student) => student._id) }, status: 'active', startDate: { $lte: todayEnd }, endDate: { $gte: today } }).select('student endDate')
+      const contractEndByStudent = new Map(activeContracts.map((contract) => [contract.student.toString(), contract.endDate]))
+      const rows = students.map((student) => ({ ...student.toJSON(), activeContractEndDate: contractEndByStudent.get(student.id) || null }))
+      return ApiResponse.ok(res, { students: rows, pagination: { page: currentPage, limit, total, totalPages } })
     } catch (error) { return next(error) }
   }
 
@@ -192,6 +223,7 @@ class StudentController {
   create = async (req, res, next) => {
     try {
       const payload = this.cleanPayload(req.body)
+      if (this.validateConditionalFields(payload, res)) return undefined
       if (await this.resolveEducation(payload, req, res)) return undefined
       if (payload.disciplinaryStatus === 'blacklisted' && !payload.disciplinaryNote) return ApiResponse.badRequest(res, 'Qora ro‘yxat sababini kiriting')
       const blocked = await this.findBlacklist(payload)
@@ -211,6 +243,7 @@ class StudentController {
       const student = await Student.findById(req.params.id)
       if (!student) return ApiResponse.notFound(res, 'Talaba topilmadi')
       const payload = this.cleanPayload(req.body)
+      if (this.validateConditionalFields(payload, res)) return undefined
       if (await this.resolveEducation(payload, req, res)) return undefined
       if (payload.disciplinaryStatus === 'blacklisted' && !payload.disciplinaryNote) return ApiResponse.badRequest(res, 'Qora ro‘yxat sababini kiriting')
       const blocked = await this.findBlacklist(payload)

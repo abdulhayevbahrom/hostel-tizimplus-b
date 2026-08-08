@@ -81,7 +81,7 @@ class DashboardController {
         sumField(FinePayment, { createdAt: { $gte: monthStart, $lt: monthEnd } }),
         sumField(Expense, { createdAt: { $gte: monthStart, $lt: monthEnd } }),
         sumField(SalaryPayment, { period: monthKey }),
-        ContractInstallment.find({ periodKey: monthKey }).select('student contract amount paidAmount status').populate('student', 'fullName').populate({ path: 'contract', select: 'room', populate: { path: 'room', select: 'roomNumber block' } }),
+        ContractInstallment.find({ periodKey: monthKey, dueDate: { $lte: selectedDayEnd } }).select('student contract amount paidAmount status dueDate').populate('student', 'fullName').populate({ path: 'contract', select: 'room', populate: { path: 'room', select: 'roomNumber block' } }),
         Fine.find({ $expr: { $lt: ['$paidAmount', '$amount'] } }).select('amount paidAmount student'),
         Attendance.find({ attendanceDate: dayKey }).select('status'),
         Payment.find().populate('student', 'fullName').sort({ createdAt: -1 }).limit(5),

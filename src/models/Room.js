@@ -2,11 +2,11 @@ import mongoose from 'mongoose'
 
 const roomSchema = new mongoose.Schema(
   {
-    roomNumber: { type: String, required: true, trim: true, unique: true, maxlength: 30 },
-    block: { type: String, required: true, trim: true, maxlength: 80 },
+    roomNumber: { type: String, required: true, trim: true, maxlength: 30 },
+    block: { type: String, trim: true, maxlength: 80, default: '' },
     floor: { type: Number, required: true, min: 1 },
     capacity: { type: Number, required: true, min: 1, max: 50 },
-    category: { type: String, enum: ['standart', 'komfort', 'premium', 'maxsus'], default: 'standart' },
+    category: { type: String, enum: ['', 'standart', 'komfort', 'premium', 'maxsus'], default: '' },
     gender: { type: String, enum: ['male', 'female'], required: true },
     status: { type: String, enum: ['available', 'maintenance'], default: 'available' },
     note: { type: String, trim: true, maxlength: 500, default: '' },
@@ -17,6 +17,8 @@ const roomSchema = new mongoose.Schema(
   },
   { timestamps: true },
 )
+
+roomSchema.index({ block: 1, floor: 1, roomNumber: 1 }, { unique: true })
 
 roomSchema.set('toJSON', {
   transform(_document, result) {

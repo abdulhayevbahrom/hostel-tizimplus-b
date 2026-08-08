@@ -2,12 +2,15 @@ import mongoose from 'mongoose'
 import { Payment } from '../models/Payment.js'
 import { StudentContract } from '../models/StudentContract.js'
 import { ContractInstallment } from '../models/ContractInstallment.js'
+import { CashSession } from '../models/CashSession.js'
 import { ApiResponse } from '../utils/response.js'
 
 const paymentPopulate = [
   { path: 'student', select: 'fullName phone photo' },
   { path: 'contract', select: 'contractNumber totalAmount paymentType room', populate: { path: 'room', select: 'roomNumber block' } },
   { path: 'allocations.installment', select: 'periodKey dueDate amount paidAmount status' },
+  { path: 'receivedBy', select: 'firstname lastname role' },
+  { path: 'cashSession', select: 'status expectedAmount closedAt' },
 ]
 
 class PaymentController {
@@ -22,21 +25,26 @@ class PaymentController {
       const filter = {}
       if (method && ['cash', 'card', 'bank', 'online'].includes(method)) filter.method = method
       if (from || to) filter.createdAt = { ...(from ? { $gte: new Date(`${from}T00:00:00`) } : {}), ...(to ? { $lte: new Date(`${to}T23:59:59.999`) } : {}) }
-      const periodInstallments = period ? await ContractInstallment.find({ periodKey: period }).select('_id student amount paidAmount').lean() : []
+      const periodInstallments = period ? await ContractInstallment.find({ periodKey: period }).select('_id student amount paidAmount dueDate').lean() : []
       if (period) filter['allocations.installment'] = { $in: periodInstallments.map((item) => item._id) }
       let payments = await Payment.find(filter).populate(paymentPopulate).sort({ createdAt: -1 })
       const needle = String(search).trim().toLowerCase()
       if (needle) payments = payments.filter((item) => `${item.student?.fullName || ''} ${item.student?.phone || ''} ${item.contract?.contractNumber || ''}`.toLowerCase().includes(needle))
-      const reportInstallments = period ? periodInstallments : await ContractInstallment.find({}).select('student amount paidAmount periodKey').lean()
+      const reportInstallments = period ? periodInstallments : await ContractInstallment.find({}).select('student amount paidAmount periodKey dueDate').lean()
       const billed = reportInstallments.reduce((sum, item) => sum + item.amount, 0)
       const paid = reportInstallments.reduce((sum, item) => sum + item.paidAmount, 0)
       const allStudents = new Set(reportInstallments.map((item) => item.student.toString()))
       const paidStudents = new Set(reportInstallments.filter((item) => item.paidAmount > 0).map((item) => item.student.toString()))
       const now = new Date(); const currentKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+      const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999)
       const isFuturePeriod = Boolean(period && period > currentKey)
-      const dueInstallments = period ? (isFuturePeriod ? [] : reportInstallments) : reportInstallments.filter((item) => item.periodKey <= currentKey)
+      const dueInstallments = reportInstallments.filter((item) => new Date(item.dueDate) <= todayEnd)
+      const waitingInstallments = reportInstallments.filter((item) => new Date(item.dueDate) > todayEnd)
       const debt = dueInstallments.reduce((sum, item) => sum + Math.max(0, item.amount - item.paidAmount), 0)
-      return ApiResponse.ok(res, { payments, summary: { billed, paid, debt, paidStudents: paidStudents.size, unpaidStudents: isFuturePeriod ? 0 : Math.max(0, allStudents.size - paidStudents.size), waitingStudents: isFuturePeriod ? Math.max(0, allStudents.size - paidStudents.size) : 0, studentCount: allStudents.size, count: payments.length, period, isFuturePeriod } })
+      const dueStudentIds = new Set(dueInstallments.map((item) => item.student.toString()))
+      const duePaidStudentIds = new Set(dueInstallments.filter((item) => item.paidAmount > 0).map((item) => item.student.toString()))
+      const waitingStudentIds = new Set(waitingInstallments.filter((item) => item.paidAmount < item.amount).map((item) => item.student.toString()))
+      return ApiResponse.ok(res, { payments, summary: { billed, paid, debt, paidStudents: paidStudents.size, unpaidStudents: Math.max(0, dueStudentIds.size - duePaidStudentIds.size), waitingStudents: waitingStudentIds.size, studentCount: allStudents.size, count: payments.length, period, isFuturePeriod } })
     } catch (error) { return next(error) }
   }
 
@@ -57,15 +65,24 @@ class PaymentController {
       const contracts = await StudentContract.find({ student: req.params.studentId }).populate('room', 'roomNumber block').sort({ startDate: -1 }).lean()
       const installments = await ContractInstallment.find({ contract: { $in: contracts.map((item) => item._id) } }).sort({ dueDate: 1, periodIndex: 1 }).lean()
       const payments = await Payment.find({ student: req.params.studentId }).populate(paymentPopulate).sort({ createdAt: -1 })
-      const total = installments.reduce((sum, item) => sum + item.amount, 0)
-      const paid = installments.reduce((sum, item) => sum + item.paidAmount, 0)
+      const activeContractIds = new Set(contracts.filter((contract) => contract.status === 'active').map((contract) => contract._id.toString()))
+      const activeInstallments = installments.filter((item) => activeContractIds.has(item.contract.toString()))
+      const sortedInstallments = [...installments].sort((first, second) => {
+        const firstActive = activeContractIds.has(first.contract.toString())
+        const secondActive = activeContractIds.has(second.contract.toString())
+        if (firstActive !== secondActive) return firstActive ? -1 : 1
+        return new Date(first.dueDate).getTime() - new Date(second.dueDate).getTime()
+      })
+      const total = activeInstallments.reduce((sum, item) => sum + item.amount, 0)
+      const paid = activeInstallments.reduce((sum, item) => sum + item.paidAmount, 0)
       const now = new Date()
-      const currentKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
-      const dueInstallments = installments.filter((item) => item.periodKey <= currentKey)
+      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+      const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999)
+      const dueInstallments = activeInstallments.filter((item) => new Date(item.dueDate) <= todayEnd)
       const debt = dueInstallments.reduce((sum, item) => sum + Math.max(0, item.amount - item.paidAmount), 0)
-      const upcoming = installments.filter((item) => item.periodKey > currentKey).reduce((sum, item) => sum + Math.max(0, item.amount - item.paidAmount), 0)
-      const overdue = installments.reduce((sum, item) => sum + (item.periodKey < currentKey ? Math.max(0, item.amount - item.paidAmount) : 0), 0)
-      return ApiResponse.ok(res, { contracts, installments, payments, summary: { total, paid, debt, overdue, upcoming, paymentCount: payments.length } })
+      const upcoming = activeInstallments.filter((item) => new Date(item.dueDate) > todayEnd).reduce((sum, item) => sum + Math.max(0, item.amount - item.paidAmount), 0)
+      const overdue = activeInstallments.reduce((sum, item) => sum + (new Date(item.dueDate) < todayStart ? Math.max(0, item.amount - item.paidAmount) : 0), 0)
+      return ApiResponse.ok(res, { contracts, installments: sortedInstallments, payments, summary: { total, paid, debt, overdue, upcoming, paymentCount: payments.length } })
     } catch (error) { return next(error) }
   }
 
@@ -84,8 +101,17 @@ class PaymentController {
       const balance = Math.max(0, installment.amount - installment.paidAmount)
       if (amount > balance) return ApiResponse.badRequest(res, `Maksimal to‘lov: ${balance.toLocaleString('uz-UZ')} so‘m`)
       installment.paidAmount += amount; installment.status = installment.paidAmount >= installment.amount ? 'paid' : 'partial'; await installment.save()
-      const payment = await Payment.create({ student: contract.student, contract: contract._id, amount, method, note, allocations: [{ installment: installment._id, amount }] })
+      let cashSession = null
+      if (req.employee.role === 'cashier' && method === 'cash') {
+        cashSession = await CashSession.findOneAndUpdate(
+          { cashier: req.employee._id, status: 'open' },
+          { $setOnInsert: { cashier: req.employee._id, status: 'open' } },
+          { new: true, upsert: true, setDefaultsOnInsert: true },
+        )
+      }
+      const payment = await Payment.create({ student: contract.student, contract: contract._id, amount, method, note, receivedBy: req.employee._id, cashSession: cashSession?._id || null, allocations: [{ installment: installment._id, amount }] })
       await payment.populate(paymentPopulate); this.emit(req, 'created', payment)
+      if (cashSession) req.app.get('io')?.emit('cash-sessions:changed', { action: 'payment-created', cashierId: req.employee.id })
       return ApiResponse.created(res, { payment }, 'To‘lov muvaffaqiyatli qabul qilindi')
     } catch (error) { return next(error) }
   }
@@ -95,6 +121,7 @@ class PaymentController {
       if (!mongoose.isValidObjectId(req.params.id)) return ApiResponse.notFound(res, 'To‘lov topilmadi')
       const payment = await Payment.findById(req.params.id)
       if (!payment) return ApiResponse.notFound(res, 'To‘lov topilmadi')
+      if (payment.cashSession) return ApiResponse.badRequest(res, 'Kassir qabul qilgan to‘lovni tahrirlab bo‘lmaydi')
       const amount = Number(req.body.amount)
       const method = req.body.method
       if (!Number.isFinite(amount) || amount <= 0) return ApiResponse.badRequest(res, 'To‘lov summasini kiriting')
@@ -118,6 +145,7 @@ class PaymentController {
       if (!mongoose.isValidObjectId(req.params.id)) return ApiResponse.notFound(res, 'To‘lov topilmadi')
       const payment = await Payment.findById(req.params.id)
       if (!payment) return ApiResponse.notFound(res, 'To‘lov topilmadi')
+      if (payment.cashSession) return ApiResponse.badRequest(res, 'Kassir qabul qilgan to‘lovni o‘chirib bo‘lmaydi')
       for (const allocation of payment.allocations) {
         const installment = await ContractInstallment.findById(allocation.installment)
         if (installment) { installment.paidAmount = Math.max(0, installment.paidAmount - allocation.amount); installment.status = installment.paidAmount <= 0 ? 'unpaid' : installment.paidAmount >= installment.amount ? 'paid' : 'partial'; await installment.save() }

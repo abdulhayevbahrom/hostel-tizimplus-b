@@ -12,6 +12,8 @@ const paymentSchema = new mongoose.Schema({
   method: { type: String, enum: ['cash', 'card', 'bank', 'online'], required: true, index: true },
   note: { type: String, trim: true, maxlength: 500, default: '' },
   allocations: { type: [allocationSchema], default: [] },
+  receivedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee', default: null, index: true },
+  cashSession: { type: mongoose.Schema.Types.ObjectId, ref: 'CashSession', default: null, index: true },
 }, { timestamps: true })
 
 paymentSchema.index({ createdAt: -1 })

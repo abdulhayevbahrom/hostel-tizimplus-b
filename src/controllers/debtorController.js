@@ -7,6 +7,7 @@ class DebtorController {
   list = async (req, res, next) => {
     try {
       const now = new Date()
+      const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999)
       const currentKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
       const requestedPeriod = /^\d{4}-\d{2}$/.test(String(req.query.period || '')) ? String(req.query.period) : currentKey
       const isFuturePeriod = requestedPeriod > currentKey
@@ -28,17 +29,19 @@ class DebtorController {
       for (const item of installments) {
         if (!item.student || !item.contract) continue
         const key = item.student._id.toString()
-        if (!grouped.has(key)) grouped.set(key, { student: item.student, contracts: new Map(), periods: [], totalDebt: 0, overdueDebt: 0, currentDebt: 0, paidTowardsDebt: 0 })
+        if (!grouped.has(key)) grouped.set(key, { student: item.student, contracts: new Map(), periods: [], totalDebt: 0, waitingAmount: 0, overdueDebt: 0, currentDebt: 0, paidTowardsDebt: 0 })
         const debtor = grouped.get(key)
         const debt = Math.max(0, item.amount - item.paidAmount)
-        debtor.periods.push({ id: item.id, contractId: item.contract.id, contractNumber: item.contract.contractNumber, periodKey: item.periodKey, dueDate: item.dueDate, amount: item.amount, paidAmount: item.paidAmount, debt, status: item.status, room: item.contract.room })
+        const isUpcoming = new Date(item.dueDate) > todayEnd
+        debtor.periods.push({ id: item.id, contractId: item.contract.id, contractNumber: item.contract.contractNumber, periodKey: item.periodKey, dueDate: item.dueDate, amount: item.amount, paidAmount: item.paidAmount, debt, status: item.status, isUpcoming, room: item.contract.room })
         debtor.contracts.set(item.contract.id, item.contract)
-        debtor.totalDebt += debt
+        if (isUpcoming) debtor.waitingAmount += debt
+        else debtor.totalDebt += debt
         debtor.paidTowardsDebt += item.paidAmount
-        if (item.periodKey < currentKey) debtor.overdueDebt += debt
-        else if (!isFuturePeriod) debtor.currentDebt += debt
+        if (!isUpcoming && item.periodKey < currentKey) debtor.overdueDebt += debt
+        else if (!isUpcoming) debtor.currentDebt += debt
       }
-      const debtors = [...grouped.values()].map((item) => {
+      const debtors = [...grouped.values()].filter((item) => isFuturePeriod ? item.waitingAmount > 0 : item.totalDebt > 0).map((item) => {
         const paymentHistory = paymentsByStudent.get(item.student.id) || []
         const lastPayment = paymentHistory[0]
         return { ...item, contracts: [...item.contracts.values()], periodCount: item.periods.length, oldestDueDate: item.periods[0]?.dueDate, lastPaymentAt: lastPayment?.createdAt || null, lastPaymentAmount: lastPayment?.amount || 0, paymentHistory, debtStatus: item.paidTowardsDebt > 0 ? 'partial' : 'unpaid' }
@@ -46,11 +49,12 @@ class DebtorController {
       const scheduledAmount = allInstallments.reduce((sum, item) => sum + item.amount, 0)
       const paidAmount = allInstallments.reduce((sum, item) => sum + item.paidAmount, 0)
       const outstanding = debtors.reduce((sum, item) => sum + item.totalDebt, 0)
+      const waitingAmount = [...grouped.values()].reduce((sum, item) => sum + item.waitingAmount, 0)
       const paidByStudent = new Map()
       allInstallments.forEach((item) => { if (item.student) paidByStudent.set(item.student.id, (paidByStudent.get(item.student.id) || 0) + item.paidAmount) })
       const paidStudentCount = [...paidByStudent.values()].filter((amount) => amount > 0).length
       const noPaymentStudentCount = [...paidByStudent.values()].filter((amount) => amount <= 0).length
-      const summary = { debtorCount: isFuturePeriod ? 0 : debtors.length, waitingCount: isFuturePeriod ? debtors.length : 0, totalDebt: isFuturePeriod ? 0 : outstanding, waitingAmount: isFuturePeriod ? outstanding : 0, scheduledAmount, paidAmount, paidStudentCount, noPaymentStudentCount, overdueDebt: debtors.reduce((sum, item) => sum + item.overdueDebt, 0), partialCount: debtors.filter((item) => item.debtStatus === 'partial').length, unpaidCount: debtors.filter((item) => item.debtStatus === 'unpaid').length }
+      const summary = { debtorCount: isFuturePeriod ? 0 : debtors.length, waitingCount: isFuturePeriod ? debtors.length : 0, totalDebt: isFuturePeriod ? 0 : outstanding, waitingAmount, scheduledAmount, paidAmount, paidStudentCount, noPaymentStudentCount, overdueDebt: debtors.reduce((sum, item) => sum + item.overdueDebt, 0), partialCount: debtors.filter((item) => item.debtStatus === 'partial').length, unpaidCount: debtors.filter((item) => item.debtStatus === 'unpaid').length }
       return ApiResponse.ok(res, { debtors, summary, selectedPeriod: requestedPeriod, currentPeriod: currentKey, isFuturePeriod })
     } catch (error) { return next(error) }
   }
