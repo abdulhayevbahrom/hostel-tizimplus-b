@@ -16,12 +16,6 @@ const io = new Server(httpServer, {
 })
 
 app.set('io', io)
-io.on('connection', (socket) => {
-  if (process.env.NODE_ENV !== 'production') console.log(`WebSocket ulandi: ${socket.id}`)
-  socket.on('disconnect', () => {
-    if (process.env.NODE_ENV !== 'production') console.log(`WebSocket uzildi: ${socket.id}`)
-  })
-})
 
 try {
   await connectDatabase()

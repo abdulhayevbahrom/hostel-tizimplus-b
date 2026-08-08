@@ -153,24 +153,32 @@ class StudentContractController {
       tomorrow.setDate(tomorrow.getDate() + 1);
       const filter = { status: "active", startDate: { $lt: tomorrow }, endDate: { $gte: today } };
       if (mongoose.isValidObjectId(req.query.room)) filter.room = req.query.room;
+      if (["student_contract", "standard_contract"].includes(req.query.contractType)) {
+        filter.student = { $in: await Student.distinct("_id", { hasTaxContract: true, taxContractType: req.query.contractType }) };
+      }
       const currentPeriod = `${today.getUTCFullYear()}-${String(today.getUTCMonth() + 1).padStart(2, "0")}`;
-      const [summaryRows, currentMonthRows] = await Promise.all([
-        StudentContract.aggregate([
-          { $group: { _id: "$status", count: { $sum: 1 } } },
-        ]),
-        ContractInstallment.aggregate([
-          { $match: { periodKey: currentPeriod } },
-          { $group: { _id: null, amount: { $sum: "$amount" } } },
-        ]),
+      const summaryFilter = {
+        ...(filter.student ? { student: filter.student } : {}),
+        ...(filter.room ? { room: filter.room } : {}),
+      };
+      const summaryContracts = await StudentContract.find(summaryFilter).select("_id status").lean();
+      const currentMonthRows = await ContractInstallment.aggregate([
+        {
+          $match: {
+            periodKey: currentPeriod,
+            contract: { $in: summaryContracts.map((contract) => contract._id) },
+          },
+        },
+        { $group: { _id: null, amount: { $sum: "$amount" } } },
       ]);
-      const summary = summaryRows.reduce((result, row) => {
-        result.total += row.count;
-        if (Object.prototype.hasOwnProperty.call(result, row._id)) result[row._id] = row.count;
+      const summary = summaryContracts.reduce((result, contract) => {
+        result.total += 1;
+        if (Object.prototype.hasOwnProperty.call(result, contract.status)) result[contract.status] += 1;
         return result;
       }, { total: 0, active: 0, completed: 0, cancelled: 0, amount: 0 });
       summary.amount = currentMonthRows[0]?.amount || 0;
       const contracts = await StudentContract.find(filter)
-        .populate({ path: "student", select: "fullName phone parentPhone photo university faculty course gender", populate: [{ path: "university", select: "name shortName" }, { path: "faculty", select: "name" }] })
+        .populate({ path: "student", select: "fullName phone parentPhone photo university faculty course gender hasTaxContract taxContractType", populate: [{ path: "university", select: "name shortName" }, { path: "faculty", select: "name" }] })
         .populate("room", "roomNumber block floor")
         .sort({ createdAt: -1 });
       const search = String(req.query.search || "").trim().toLowerCase();
