@@ -59,6 +59,58 @@ class PaymentController {
     } catch (error) { return next(error) }
   }
 
+  advance = async (_req, res, next) => {
+    try {
+      const payments = await Payment.find({})
+        .populate(paymentPopulate)
+        .sort({ createdAt: -1 })
+      const groups = new Map()
+      for (const payment of payments) {
+        const installment = payment.allocations?.[0]?.installment
+        if (!installment?.periodKey) continue
+        const paymentPeriod = new Date(payment.createdAt).toISOString().slice(0, 7)
+        if (installment.periodKey <= paymentPeriod) continue
+        const amount = payment.allocations?.[0]?.amount || payment.amount
+        if (!groups.has(installment.periodKey)) {
+          groups.set(installment.periodKey, {
+            periodKey: installment.periodKey,
+            totalAmount: 0,
+            studentIds: new Set(),
+            payments: [],
+          })
+        }
+        const group = groups.get(installment.periodKey)
+        group.totalAmount += amount
+        if (payment.student?.id) group.studentIds.add(payment.student.id)
+        group.payments.push({
+          id: payment.id,
+          student: payment.student,
+          contract: payment.contract,
+          amount,
+          method: payment.method,
+          note: payment.note,
+          createdAt: payment.createdAt,
+        })
+      }
+      const periods = [...groups.values()]
+        .map(({ studentIds, ...group }) => ({
+          ...group,
+          studentCount: studentIds.size,
+          paymentCount: group.payments.length,
+        }))
+        .sort((first, second) => second.periodKey.localeCompare(first.periodKey))
+      return ApiResponse.ok(res, {
+        periods,
+        summary: {
+          totalAmount: periods.reduce((sum, item) => sum + item.totalAmount, 0),
+          studentCount: new Set(periods.flatMap((item) => item.payments.map((payment) => payment.student?.id).filter(Boolean))).size,
+          paymentCount: periods.reduce((sum, item) => sum + item.paymentCount, 0),
+          periodCount: periods.length,
+        },
+      })
+    } catch (error) { return next(error) }
+  }
+
   studentProfile = async (req, res, next) => {
     try {
       if (!mongoose.isValidObjectId(req.params.studentId)) return ApiResponse.notFound(res, 'Talaba topilmadi')
