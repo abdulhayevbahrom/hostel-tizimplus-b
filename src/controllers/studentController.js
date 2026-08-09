@@ -182,6 +182,7 @@ class StudentController {
       if (mongoose.isValidObjectId(req.query.faculty)) filter.faculty = req.query.faculty
       const course = Number.parseInt(req.query.course, 10)
       if (course >= 1 && course <= 6) filter.course = course
+      if (['green', 'warning', 'red'].includes(req.query.studentStatus)) filter.studentStatus = req.query.studentStatus
       if (mongoose.isValidObjectId(req.query.room)) {
         const now = new Date()
         const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
