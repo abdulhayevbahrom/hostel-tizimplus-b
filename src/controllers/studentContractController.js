@@ -66,6 +66,41 @@ class StudentContractController {
     await ContractInstallment.insertMany(buildContractInstallments(contract));
   }
 
+  async extendInstallments(contract) {
+    const desiredInstallments = buildContractInstallments(contract);
+    const existingInstallments = await ContractInstallment.find({
+      contract: contract._id,
+    });
+    const existingByIndex = new Map(
+      existingInstallments.map((item) => [item.periodIndex, item]),
+    );
+    const operations = desiredInstallments.map((desired) => {
+      const existing = existingByIndex.get(desired.periodIndex);
+      if (!existing) return { insertOne: { document: desired } };
+      const paidAmount = existing.paidAmount || 0;
+      return {
+        updateOne: {
+          filter: { _id: existing._id },
+          update: {
+            $set: {
+              student: desired.student,
+              periodKey: desired.periodKey,
+              dueDate: desired.dueDate,
+              amount: desired.amount,
+              status:
+                paidAmount <= 0
+                  ? "unpaid"
+                  : paidAmount >= desired.amount
+                    ? "paid"
+                    : "partial",
+            },
+          },
+        },
+      };
+    });
+    if (operations.length) await ContractInstallment.bulkWrite(operations);
+  }
+
   async ensureInstallments(contract) {
     if (
       contract.totalAmount == null ||
@@ -263,21 +298,32 @@ class StudentContractController {
           res,
           "Tugash sanasi boshlanish sanasidan keyin bo‘lishi kerak",
         );
-      const financialChanged =
+      const baseFinancialChanged =
         existing.paymentType !== payload.paymentType ||
         existing.paymentAmount !== payload.paymentAmount ||
         new Date(existing.startDate).getTime() !==
-          new Date(payload.startDate).getTime() ||
+          new Date(payload.startDate).getTime();
+      const endDateChanged =
         new Date(existing.endDate).getTime() !==
-          new Date(payload.endDate).getTime();
+        new Date(payload.endDate).getTime();
+      const financialChanged = baseFinancialChanged || endDateChanged;
       const paidExists = await ContractInstallment.exists({
         contract: req.params.id,
         paidAmount: { $gt: 0 },
       });
-      if (paidExists && financialChanged)
+      if (paidExists && baseFinancialChanged)
         return ApiResponse.conflict(
           res,
-          "To‘lov qilingan shartnomaning sana yoki tarifini o‘zgartirib bo‘lmaydi",
+          "To‘lov qilingan shartnomaning boshlanish sanasi yoki tarifini o‘zgartirib bo‘lmaydi",
+        );
+      if (
+        paidExists &&
+        endDateChanged &&
+        new Date(payload.endDate) < new Date(existing.endDate)
+      )
+        return ApiResponse.conflict(
+          res,
+          "To‘lov qilingan shartnomaning tugash sanasini faqat uzaytirish mumkin",
         );
       if (payload.status === "cancelled" && existing.status !== "cancelled") {
         const now = new Date();
@@ -288,7 +334,10 @@ class StudentContractController {
         payload,
         { new: true, runValidators: true },
       ).populate("room", "roomNumber block floor");
-      if (financialChanged) await this.syncInstallments(contract);
+      if (financialChanged) {
+        if (paidExists) await this.extendInstallments(contract);
+        else await this.syncInstallments(contract);
+      }
       this.emitChange(req, "updated", contract);
       return ApiResponse.ok(res, { contract }, "Shartnoma yangilandi");
     } catch (error) {
