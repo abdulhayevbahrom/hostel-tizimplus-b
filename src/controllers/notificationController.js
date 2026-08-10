@@ -5,7 +5,18 @@ import { ApiResponse } from '../utils/response.js'
 class NotificationController {
   list = async (req, res, next) => {
     try {
-      const notifications = await Notification.find({ readBy: { $ne: req.employee._id }, $or: [{ targetRoles: { $exists: false } }, { targetRoles: { $size: 0 } }, { targetRoles: req.employee.role }] }).sort({ createdAt: -1 }).limit(30)
+      const notifications = await Notification.find({
+        readBy: { $ne: req.employee._id },
+        $or: [
+          { targetEmployees: req.employee._id },
+          {
+            $and: [
+              { $or: [{ targetEmployees: { $exists: false } }, { targetEmployees: { $size: 0 } }] },
+              { $or: [{ targetRoles: { $exists: false } }, { targetRoles: { $size: 0 } }, { targetRoles: req.employee.role }] },
+            ],
+          },
+        ],
+      }).sort({ createdAt: -1 }).limit(30)
       const rows = notifications.map((notification) => ({
         ...notification.toJSON(),
         isRead: notification.readBy.some((employeeId) => employeeId.toString() === req.employee.id),

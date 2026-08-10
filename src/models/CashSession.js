@@ -6,6 +6,13 @@ const cashSessionSchema = new mongoose.Schema({
   expectedAmount: { type: Number, default: 0, min: 0 },
   receivedAmount: { type: Number, default: null, min: 0 },
   paymentCount: { type: Number, default: 0, min: 0 },
+  sourceSession: { type: mongoose.Schema.Types.ObjectId, ref: 'CashSession', default: null, index: true },
+  breakdown: {
+    cash: { type: Number, default: 0, min: 0 },
+    card: { type: Number, default: 0, min: 0 },
+    online: { type: Number, default: 0, min: 0 },
+    bank: { type: Number, default: 0, min: 0 },
+  },
   closedAt: { type: Date, default: null },
   reviewedAt: { type: Date, default: null },
   reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee', default: null },

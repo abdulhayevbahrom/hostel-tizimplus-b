@@ -3,12 +3,13 @@ import mongoose from 'mongoose'
 const notificationSchema = new mongoose.Schema(
   {
     eventKey: { type: String, required: true, unique: true, index: true },
-    type: { type: String, enum: ['contract_expiry', 'cash_session'], required: true },
+    type: { type: String, enum: ['contract_expiry', 'cash_session', 'payment_change'], required: true },
     title: { type: String, required: true, trim: true, maxlength: 160 },
     message: { type: String, required: true, trim: true, maxlength: 500 },
     count: { type: Number, required: true, min: 1 },
     targetPath: { type: String, required: true, default: '/contracts' },
     targetRoles: [{ type: String, enum: ['employee', 'manager', 'cashier', 'owner', 'admin'] }],
+    targetEmployees: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Employee' }],
     readBy: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Employee' }],
   },
   { timestamps: true },
