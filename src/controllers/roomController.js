@@ -10,7 +10,7 @@ class RoomController {
     return {
       roomNumber: String(body.roomNumber || '').trim(),
       block: String(body.block || '').trim(),
-      floor: Number(body.floor),
+      floor: String(body.floor ?? '').trim(),
       capacity: Number(body.capacity),
       category: body.category || '',
       gender: body.gender,
@@ -30,7 +30,12 @@ class RoomController {
       todayStart.setHours(0, 0, 0, 0)
       const todayEnd = new Date(todayStart)
       todayEnd.setDate(todayEnd.getDate() + 1)
-      const roomDocuments = await Room.find().sort({ block: 1, floor: 1, roomNumber: 1 })
+      const roomDocuments = await Room.find().sort({ block: 1, roomNumber: 1 })
+      roomDocuments.sort((first, second) => (
+        first.block.localeCompare(second.block, undefined, { numeric: true })
+        || first.floor.localeCompare(second.floor, undefined, { numeric: true })
+        || first.roomNumber.localeCompare(second.roomNumber, undefined, { numeric: true })
+      ))
       const occupied = await StudentContract.aggregate([{ $match: { status: 'active', startDate: { $lt: todayEnd }, endDate: { $gte: todayStart } } }, { $group: { _id: '$room', count: { $sum: 1 } } }])
       const occupiedByRoom = new Map(occupied.map((item) => [item._id.toString(), item.count]))
       const rooms = roomDocuments.map((room) => ({ ...room.toJSON(), occupiedCount: occupiedByRoom.get(room.id) || 0 }))
