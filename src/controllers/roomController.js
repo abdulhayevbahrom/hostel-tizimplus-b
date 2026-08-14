@@ -5,6 +5,26 @@ import { StudentContract } from '../models/StudentContract.js'
 import { ApiResponse } from '../utils/response.js'
 import { uploadImages } from '../utils/imgbb.js'
 
+const occupancyPeriod = (period) => {
+  const value = String(period || '')
+  const match = /^(\d{4})-(\d{2})$/.exec(value)
+  if (!match) {
+    const start = new Date()
+    start.setHours(0, 0, 0, 0)
+    const end = new Date(start)
+    end.setDate(end.getDate() + 1)
+    return { start, end }
+  }
+
+  const year = Number(match[1])
+  const month = Number(match[2])
+  if (month < 1 || month > 12) return null
+  return {
+    start: new Date(year, month - 1, 1),
+    end: new Date(year, month, 1),
+  }
+}
+
 class RoomController {
   cleanPayload(body) {
     return {
@@ -26,17 +46,15 @@ class RoomController {
 
   list = async (req, res, next) => {
     try {
-      const todayStart = new Date()
-      todayStart.setHours(0, 0, 0, 0)
-      const todayEnd = new Date(todayStart)
-      todayEnd.setDate(todayEnd.getDate() + 1)
+      const period = occupancyPeriod(req.query.period)
+      if (!period) return ApiResponse.badRequest(res, 'Oy YYYY-MM formatida bo‘lishi kerak')
       const roomDocuments = await Room.find().sort({ block: 1, roomNumber: 1 })
       roomDocuments.sort((first, second) => (
         first.block.localeCompare(second.block, undefined, { numeric: true })
         || first.floor.localeCompare(second.floor, undefined, { numeric: true })
         || first.roomNumber.localeCompare(second.roomNumber, undefined, { numeric: true })
       ))
-      const occupied = await StudentContract.aggregate([{ $match: { status: 'active', startDate: { $lt: todayEnd }, endDate: { $gte: todayStart } } }, { $group: { _id: '$room', count: { $sum: 1 } } }])
+      const occupied = await StudentContract.aggregate([{ $match: { status: 'active', startDate: { $lt: period.end }, endDate: { $gte: period.start } } }, { $group: { _id: '$room', count: { $sum: 1 } } }])
       const occupiedByRoom = new Map(occupied.map((item) => [item._id.toString(), item.count]))
       const rooms = roomDocuments.map((room) => ({ ...room.toJSON(), occupiedCount: occupiedByRoom.get(room.id) || 0 }))
       const summary = rooms.reduce((result, room) => {
@@ -65,11 +83,9 @@ class RoomController {
       if (!mongoose.isValidObjectId(req.params.id)) return ApiResponse.notFound(res, 'Xona topilmadi')
       const room = await Room.findById(req.params.id)
       if (!room) return ApiResponse.notFound(res, 'Xona topilmadi')
-      const todayStart = new Date()
-      todayStart.setHours(0, 0, 0, 0)
-      const todayEnd = new Date(todayStart)
-      todayEnd.setDate(todayEnd.getDate() + 1)
-      const contracts = await StudentContract.find({ room: room._id, status: 'active', startDate: { $lt: todayEnd }, endDate: { $gte: todayStart } })
+      const period = occupancyPeriod(req.query.period)
+      if (!period) return ApiResponse.badRequest(res, 'Oy YYYY-MM formatida bo‘lishi kerak')
+      const contracts = await StudentContract.find({ room: room._id, status: 'active', startDate: { $lt: period.end }, endDate: { $gte: period.start } })
         .populate({ path: 'student', select: 'fullName phone parentPhone photo university faculty course gender', populate: [{ path: 'university', select: 'name' }, { path: 'faculty', select: 'name' }] })
         .sort({ startDate: 1 })
       const students = contracts.filter((item) => item.student).map((contract) => ({ student: contract.student, contract: { id: contract.id, contractNumber: contract.contractNumber, startDate: contract.startDate, endDate: contract.endDate, paymentType: contract.paymentType, paymentAmount: contract.paymentAmount } }))
