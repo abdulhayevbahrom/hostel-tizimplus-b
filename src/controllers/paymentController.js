@@ -187,17 +187,6 @@ class PaymentController {
       if (!contract) return ApiResponse.notFound(res, 'Shartnoma topilmadi')
       const installment = await ContractInstallment.findOne({ _id: installmentId, contract: contract._id })
       if (!installment) return ApiResponse.badRequest(res, 'Tanlangan to‘lov davri topilmadi')
-      const earlierUnpaidInstallment = await ContractInstallment.findOne({
-        contract: contract._id,
-        periodIndex: { $lt: installment.periodIndex },
-        $expr: { $lt: ['$paidAmount', '$amount'] },
-      }).sort({ periodIndex: 1 })
-      if (earlierUnpaidInstallment) {
-        return ApiResponse.badRequest(
-          res,
-          `Avval ${earlierUnpaidInstallment.periodKey} oyidagi qarzni to‘liq yoping`,
-        )
-      }
       const balance = Math.max(0, installment.amount - installment.paidAmount)
       if (amount > balance) return ApiResponse.badRequest(res, `Maksimal to‘lov: ${balance.toLocaleString('uz-UZ')} so‘m`)
       installment.paidAmount += amount; installment.status = installment.paidAmount >= installment.amount ? 'paid' : 'partial'; await installment.save()
