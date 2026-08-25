@@ -54,7 +54,12 @@ class RoomController {
         || first.floor.localeCompare(second.floor, undefined, { numeric: true })
         || first.roomNumber.localeCompare(second.roomNumber, undefined, { numeric: true })
       ))
-      const occupied = await StudentContract.aggregate([{ $match: { status: 'active', startDate: { $lt: period.end }, endDate: { $gte: period.start } } }, { $group: { _id: '$room', count: { $sum: 1 } } }])
+      const occupied = await StudentContract.aggregate([
+        { $match: { status: 'active', startDate: { $lt: period.end }, endDate: { $gte: period.start } } },
+        { $lookup: { from: 'students', localField: 'student', foreignField: '_id', as: 'studentDocument' } },
+        { $match: { 'studentDocument.0': { $exists: true } } },
+        { $group: { _id: '$room', count: { $sum: 1 } } },
+      ])
       const occupiedByRoom = new Map(occupied.map((item) => [item._id.toString(), item.count]))
       const rooms = roomDocuments.map((room) => ({ ...room.toJSON(), occupiedCount: occupiedByRoom.get(room.id) || 0 }))
       const summary = rooms.reduce((result, room) => {

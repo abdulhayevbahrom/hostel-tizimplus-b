@@ -154,9 +154,22 @@ class StudentContractController {
       const filter = {
         room: room._id,
         status: "active",
-        ...(excludeContractId ? { _id: { $ne: excludeContractId } } : {}),
+        ...(excludeContractId ? { _id: { $ne: new mongoose.Types.ObjectId(excludeContractId) } } : {}),
       };
-      if ((await StudentContract.countDocuments(filter)) >= room.capacity)
+      const occupiedRows = await StudentContract.aggregate([
+        { $match: filter },
+        {
+          $lookup: {
+            from: "students",
+            localField: "student",
+            foreignField: "_id",
+            as: "studentDocument",
+          },
+        },
+        { $match: { "studentDocument.0": { $exists: true } } },
+        { $count: "count" },
+      ]);
+      if ((occupiedRows[0]?.count || 0) >= room.capacity)
         return ApiResponse.conflict(res, "Bu xonada bo‘sh o‘rin qolmagan");
     }
     return null;

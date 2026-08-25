@@ -263,6 +263,9 @@ class StudentController {
   remove = async (req, res, next) => {
     try {
       if (!mongoose.isValidObjectId(req.params.id)) return ApiResponse.notFound(res, 'Talaba topilmadi')
+      if (await StudentContract.exists({ student: req.params.id })) {
+        return ApiResponse.conflict(res, 'Shartnoma yoki to‘lov tarixi mavjud bo‘lgan talabani o‘chirib bo‘lmaydi')
+      }
       const student = await Student.findByIdAndDelete(req.params.id)
       if (!student) return ApiResponse.notFound(res, 'Talaba topilmadi')
       this.emitChange(req, 'deleted', student)
