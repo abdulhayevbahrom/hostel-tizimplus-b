@@ -9,9 +9,10 @@ export async function createDebtorDeadlineNotification(io) {
   const tomorrowStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1)
   const deadlines = await DebtorDeadline.find({ deadline: { $gte: todayStart, $lt: tomorrowStart } }).select('student periodKey').lean()
   if (!deadlines.length) return
+  const financialContractIds = await StudentContract.distinct('_id', { status: { $ne: 'cancelled' } })
   const dueStudentIds = new Set()
   for (const item of deadlines) {
-    const hasDebt = await ContractInstallment.exists({ student: item.student, periodKey: item.periodKey, $expr: { $lt: ['$paidAmount', '$amount'] } })
+    const hasDebt = await ContractInstallment.exists({ student: item.student, periodKey: item.periodKey, contract: { $in: financialContractIds }, $expr: { $lt: ['$paidAmount', '$amount'] } })
     if (hasDebt) dueStudentIds.add(item.student.toString())
   }
   const count = dueStudentIds.size

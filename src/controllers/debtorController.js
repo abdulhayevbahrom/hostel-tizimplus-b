@@ -2,6 +2,7 @@ import mongoose from 'mongoose'
 import { ContractInstallment } from '../models/ContractInstallment.js'
 import { Payment } from '../models/Payment.js'
 import { DebtorDeadline } from '../models/DebtorDeadline.js'
+import { StudentContract } from '../models/StudentContract.js'
 import { ApiResponse } from '../utils/response.js'
 
 class DebtorController {
@@ -12,7 +13,8 @@ class DebtorController {
       const currentKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
       const requestedPeriod = /^\d{4}-\d{2}$/.test(String(req.query.period || '')) ? String(req.query.period) : currentKey
       const isFuturePeriod = requestedPeriod > currentKey
-      const allInstallments = await ContractInstallment.find({ periodKey: requestedPeriod })
+      const financialContractIds = await StudentContract.distinct('_id', { status: { $ne: 'cancelled' } })
+      const allInstallments = await ContractInstallment.find({ periodKey: requestedPeriod, contract: { $in: financialContractIds } })
         .populate({ path: 'student', select: 'fullName phone parentPhone photo university faculty course', populate: [{ path: 'university', select: 'name' }, { path: 'faculty', select: 'name' }] })
         .populate({ path: 'contract', select: 'contractNumber status room startDate endDate paymentType', populate: { path: 'room', select: 'roomNumber block floor' } })
         .sort({ dueDate: 1 })
@@ -22,7 +24,7 @@ class DebtorController {
       const deadlinesByStudent = new Map(deadlines.map((item) => [item.student.toString(), item]))
 
       const studentIds = [...new Set(installments.map((item) => item.student?._id?.toString()).filter(Boolean))]
-      const paymentRows = await Payment.find({ student: { $in: studentIds.map((id) => new mongoose.Types.ObjectId(id)) } })
+      const paymentRows = await Payment.find({ student: { $in: studentIds.map((id) => new mongoose.Types.ObjectId(id)) }, contract: { $in: financialContractIds } })
         .select('student contract amount method note allocations createdAt')
         .populate('contract', 'contractNumber')
         .populate('allocations.installment', 'periodKey')
@@ -71,7 +73,8 @@ class DebtorController {
       if (!/^\d{4}-\d{2}$/.test(periodKey)) return ApiResponse.badRequest(res, 'Qarzdorlik oyini tanlang')
       const deadline = new Date(`${req.body.deadline}T23:59:59.999`)
       if (!/^\d{4}-\d{2}-\d{2}$/.test(String(req.body.deadline || '')) || Number.isNaN(deadline.getTime())) return ApiResponse.badRequest(res, 'Deadline sanasini kiriting')
-      const hasDebt = await ContractInstallment.exists({ student: req.params.studentId, periodKey, $expr: { $lt: ['$paidAmount', '$amount'] } })
+      const financialContractIds = await StudentContract.distinct('_id', { status: { $ne: 'cancelled' } })
+      const hasDebt = await ContractInstallment.exists({ student: req.params.studentId, periodKey, contract: { $in: financialContractIds }, $expr: { $lt: ['$paidAmount', '$amount'] } })
       if (!hasDebt) return ApiResponse.badRequest(res, 'Tanlangan oy uchun qarzdorlik topilmadi')
       const saved = await DebtorDeadline.findOneAndUpdate(
         { student: req.params.studentId, periodKey },

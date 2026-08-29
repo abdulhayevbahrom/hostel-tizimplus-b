@@ -62,12 +62,14 @@ class PaymentController {
       const filter = {}
       if (method && ['cash', 'card', 'bank', 'online'].includes(method)) filter.method = method
       if (from || to) filter.createdAt = { ...(from ? { $gte: new Date(`${from}T00:00:00`) } : {}), ...(to ? { $lte: new Date(`${to}T23:59:59.999`) } : {}) }
-      const periodInstallments = period ? await ContractInstallment.find({ periodKey: period }).select('_id student amount paidAmount dueDate').lean() : []
+      const financialContractIds = await StudentContract.distinct('_id', { status: { $ne: 'cancelled' } })
+      const periodInstallments = period ? await ContractInstallment.find({ periodKey: period, contract: { $in: financialContractIds } }).select('_id student amount paidAmount dueDate').lean() : []
       if (period) filter['allocations.installment'] = { $in: periodInstallments.map((item) => item._id) }
+      filter.contract = { $in: financialContractIds }
       let payments = await Payment.find(filter).populate(paymentPopulate).sort({ createdAt: -1 })
       const needle = String(search).trim().toLowerCase()
       if (needle) payments = payments.filter((item) => `${item.student?.fullName || ''} ${item.student?.phone || ''} ${item.contract?.contractNumber || ''}`.toLowerCase().includes(needle))
-      const reportInstallments = period ? periodInstallments : await ContractInstallment.find({}).select('student amount paidAmount periodKey dueDate').lean()
+      const reportInstallments = period ? periodInstallments : await ContractInstallment.find({ contract: { $in: financialContractIds } }).select('student amount paidAmount periodKey dueDate').lean()
       const billed = reportInstallments.reduce((sum, item) => sum + item.amount, 0)
       const paid = reportInstallments.reduce((sum, item) => sum + item.paidAmount, 0)
       const allStudents = new Set(reportInstallments.map((item) => item.student.toString()))
@@ -87,7 +89,7 @@ class PaymentController {
 
   options = async (_req, res, next) => {
     try {
-      const contracts = await StudentContract.find({ status: { $in: ['active', 'cancelled', 'completed'] } }).populate('student', 'fullName phone').populate('room', 'roomNumber block').sort({ createdAt: -1 }).lean()
+      const contracts = await StudentContract.find({ status: { $in: ['active', 'completed'] } }).populate('student', 'fullName phone').populate('room', 'roomNumber block').sort({ createdAt: -1 }).lean()
       const installments = await ContractInstallment.find({ contract: { $in: contracts.map((item) => item._id) } }).sort({ dueDate: 1 }).lean()
       const byContract = new Map()
       installments.forEach((item) => { const key = item.contract.toString(); if (!byContract.has(key)) byContract.set(key, []); byContract.get(key).push(item) })
@@ -98,7 +100,8 @@ class PaymentController {
 
   advance = async (_req, res, next) => {
     try {
-      const payments = await Payment.find({ cancelledAt: null })
+      const financialContractIds = await StudentContract.distinct('_id', { status: { $ne: 'cancelled' } })
+      const payments = await Payment.find({ cancelledAt: null, contract: { $in: financialContractIds } })
         .populate(paymentPopulate)
         .sort({ createdAt: -1 })
       const groups = new Map()
@@ -151,9 +154,9 @@ class PaymentController {
   studentProfile = async (req, res, next) => {
     try {
       if (!mongoose.isValidObjectId(req.params.studentId)) return ApiResponse.notFound(res, 'Talaba topilmadi')
-      const contracts = await StudentContract.find({ student: req.params.studentId }).populate('room', 'roomNumber block').sort({ startDate: -1 }).lean()
+      const contracts = await StudentContract.find({ student: req.params.studentId, status: { $ne: 'cancelled' } }).populate('room', 'roomNumber block').sort({ startDate: -1 }).lean()
       const installments = await ContractInstallment.find({ contract: { $in: contracts.map((item) => item._id) } }).sort({ dueDate: 1, periodIndex: 1 }).lean()
-      const payments = await Payment.find({ student: req.params.studentId }).populate(paymentPopulate).sort({ createdAt: -1 })
+      const payments = await Payment.find({ student: req.params.studentId, contract: { $in: contracts.map((contract) => contract._id) } }).populate(paymentPopulate).sort({ createdAt: -1 })
       const activeContractIds = new Set(contracts.filter((contract) => contract.status === 'active').map((contract) => contract._id.toString()))
       const activeInstallments = installments.filter((item) => activeContractIds.has(item.contract.toString()))
       const sortedInstallments = [...installments].sort((first, second) => {
@@ -185,6 +188,7 @@ class PaymentController {
       if (!['cash', 'card', 'bank', 'online'].includes(method)) return ApiResponse.badRequest(res, 'To‘lov usulini tanlang')
       const contract = await StudentContract.findById(contractId)
       if (!contract) return ApiResponse.notFound(res, 'Shartnoma topilmadi')
+      if (contract.status === 'cancelled') return ApiResponse.badRequest(res, 'Bekor qilingan shartnoma uchun to‘lov qabul qilinmaydi')
       const installment = await ContractInstallment.findOne({ _id: installmentId, contract: contract._id })
       if (!installment) return ApiResponse.badRequest(res, 'Tanlangan to‘lov davri topilmadi')
       const balance = Math.max(0, installment.amount - installment.paidAmount)

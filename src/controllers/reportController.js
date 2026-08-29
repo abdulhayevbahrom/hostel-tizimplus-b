@@ -38,12 +38,14 @@ class ReportController {
       const start = new Date(year, month - 1, 1)
       const end = new Date(year, month, 1)
       const dateMatch = { $gte: start, $lt: end }
+      const financialContractIds = await StudentContract.distinct('_id', { status: { $ne: 'cancelled' } })
+      const paymentMatch = { contract: { $in: financialContractIds }, createdAt: dateMatch }
 
       const [incomeRows, expenseRows, salaryRows, methods, categories, details] = await Promise.all([
-        aggregateByDay(Payment, { createdAt: dateMatch }, 'createdAt'),
+        aggregateByDay(Payment, paymentMatch, 'createdAt'),
         aggregateByDay(Expense, { spentAt: dateMatch }, 'spentAt'),
         SalaryPayment.aggregate([{ $match: { period } }, { $group: { _id: { $dayOfMonth: { date: '$createdAt', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' }, count: { $sum: 1 } } }]),
-        Payment.aggregate([{ $match: { createdAt: dateMatch } }, { $group: { _id: '$method', amount: { $sum: '$amount' }, count: { $sum: 1 } } }, { $sort: { amount: -1 } }]),
+        Payment.aggregate([{ $match: paymentMatch }, { $group: { _id: '$method', amount: { $sum: '$amount' }, count: { $sum: 1 } } }, { $sort: { amount: -1 } }]),
         Expense.aggregate([{ $match: { spentAt: dateMatch } }, { $group: { _id: '$category', amount: { $sum: '$amount' }, count: { $sum: 1 } } }, { $sort: { amount: -1 } }]),
         this.details({ dateMatch, period }),
       ])
@@ -72,12 +74,14 @@ class ReportController {
       const end = new Date(year + 1, 0, 1)
       const dateMatch = { $gte: start, $lt: end }
       const periodMatch = { $gte: `${year}-01`, $lte: `${year}-12` }
+      const financialContractIds = await StudentContract.distinct('_id', { status: { $ne: 'cancelled' } })
+      const paymentMatch = { contract: { $in: financialContractIds }, createdAt: dateMatch }
 
       const [incomeRows, expenseRows, salaryRows, methods, categories, details] = await Promise.all([
-        aggregateByMonth(Payment, { createdAt: dateMatch }, 'createdAt'),
+        aggregateByMonth(Payment, paymentMatch, 'createdAt'),
         aggregateByMonth(Expense, { spentAt: dateMatch }, 'spentAt'),
         SalaryPayment.aggregate([{ $match: { period: periodMatch } }, { $group: { _id: { $toInt: { $substrBytes: ['$period', 5, 2] } }, amount: { $sum: '$amount' }, count: { $sum: 1 } } }, { $sort: { _id: 1 } }]),
-        Payment.aggregate([{ $match: { createdAt: dateMatch } }, { $group: { _id: '$method', amount: { $sum: '$amount' }, count: { $sum: 1 } } }, { $sort: { amount: -1 } }]),
+        Payment.aggregate([{ $match: paymentMatch }, { $group: { _id: '$method', amount: { $sum: '$amount' }, count: { $sum: 1 } } }, { $sort: { amount: -1 } }]),
         Expense.aggregate([{ $match: { spentAt: dateMatch } }, { $group: { _id: '$category', amount: { $sum: '$amount' }, count: { $sum: 1 } } }, { $sort: { amount: -1 } }]),
         this.details({ dateMatch, periodMatch }),
       ])

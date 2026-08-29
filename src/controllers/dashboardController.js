@@ -44,6 +44,8 @@ class DashboardController {
       const dayEnd = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate() + 1)
       const selectedDayEnd = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate(), 23, 59, 59, 999)
       const activeContractFilter = { status: { $in: ['active', 'completed'] }, startDate: { $lte: selectedDayEnd }, endDate: { $gte: dayStart } }
+      const financialContractIds = await StudentContract.distinct('_id', { status: { $ne: 'cancelled' } })
+      const financialPaymentFilter = { contract: { $in: financialContractIds } }
       const [
         rooms,
         activeContracts,
@@ -77,30 +79,30 @@ class DashboardController {
         Room.find().select('capacity status'),
         StudentContract.find(activeContractFilter).select('student room'),
         Employee.find({ isActive: true }).select('salary'),
-        sumField(Payment, { createdAt: { $gte: monthStart, $lt: monthEnd } }),
+        sumField(Payment, { ...financialPaymentFilter, createdAt: { $gte: monthStart, $lt: monthEnd } }),
         sumField(FinePayment, { createdAt: { $gte: monthStart, $lt: monthEnd } }),
         sumField(Expense, { createdAt: { $gte: monthStart, $lt: monthEnd } }),
         sumField(SalaryPayment, { period: monthKey }),
-        ContractInstallment.find({ periodKey: monthKey, dueDate: { $lte: selectedDayEnd } }).select('student contract amount paidAmount status dueDate').populate('student', 'fullName').populate({ path: 'contract', select: 'room', populate: { path: 'room', select: 'roomNumber block' } }),
+        ContractInstallment.find({ periodKey: monthKey, dueDate: { $lte: selectedDayEnd }, contract: { $in: financialContractIds } }).select('student contract amount paidAmount status dueDate').populate('student', 'fullName').populate({ path: 'contract', select: 'room', populate: { path: 'room', select: 'roomNumber block' } }),
         Fine.find({ $expr: { $lt: ['$paidAmount', '$amount'] } }).select('amount paidAmount student'),
         Attendance.find({ attendanceDate: dayKey }).select('status'),
-        Payment.find().populate('student', 'fullName').sort({ createdAt: -1 }).limit(5),
+        Payment.find(financialPaymentFilter).populate('student', 'fullName').sort({ createdAt: -1 }).limit(5),
         FinePayment.find().populate('student', 'fullName').sort({ createdAt: -1 }).limit(5),
         Expense.find().populate('createdBy', 'firstname lastname').sort({ createdAt: -1 }).limit(5),
         SalaryPayment.find().populate('employee', 'firstname lastname').sort({ createdAt: -1 }).limit(5),
-        Payment.aggregate([{ $match: { createdAt: { $gte: new Date(now.getFullYear(), now.getMonth() - 5, 1) } } }, { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$createdAt', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' } } }]),
+        Payment.aggregate([{ $match: { ...financialPaymentFilter, createdAt: { $gte: new Date(now.getFullYear(), now.getMonth() - 5, 1) } } }, { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$createdAt', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' } } }]),
         FinePayment.aggregate([{ $match: { createdAt: { $gte: new Date(now.getFullYear(), now.getMonth() - 5, 1) } } }, { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$createdAt', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' } } }]),
         Expense.aggregate([{ $match: { createdAt: { $gte: new Date(now.getFullYear(), now.getMonth() - 5, 1) } } }, { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$createdAt', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' } } }]),
         SalaryPayment.aggregate([{ $match: { period: { $gte: recentPeriods(now)[0] } } }, { $group: { _id: '$period', amount: { $sum: '$amount' } } }]),
-        sumField(Payment, { createdAt: { $gte: dayStart, $lt: dayEnd } }),
+        sumField(Payment, { ...financialPaymentFilter, createdAt: { $gte: dayStart, $lt: dayEnd } }),
         sumField(FinePayment, { createdAt: { $gte: dayStart, $lt: dayEnd } }),
         sumField(Expense, { createdAt: { $gte: dayStart, $lt: dayEnd } }),
-        Payment.aggregate([{ $match: { createdAt: { $gte: monthStart, $lt: monthEnd } } }, { $group: { _id: '$method', amount: { $sum: '$amount' }, count: { $sum: 1 } } }]),
+        Payment.aggregate([{ $match: { ...financialPaymentFilter, createdAt: { $gte: monthStart, $lt: monthEnd } } }, { $group: { _id: '$method', amount: { $sum: '$amount' }, count: { $sum: 1 } } }]),
         FinePayment.aggregate([{ $match: { createdAt: { $gte: monthStart, $lt: monthEnd } } }, { $group: { _id: '$method', amount: { $sum: '$amount' }, count: { $sum: 1 } } }]),
-        Payment.aggregate([{ $match: { createdAt: { $gte: monthStart, $lt: monthEnd } } }, { $group: { _id: { $dayOfMonth: { date: '$createdAt', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' } } }]),
+        Payment.aggregate([{ $match: { ...financialPaymentFilter, createdAt: { $gte: monthStart, $lt: monthEnd } } }, { $group: { _id: { $dayOfMonth: { date: '$createdAt', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' } } }]),
         FinePayment.aggregate([{ $match: { createdAt: { $gte: monthStart, $lt: monthEnd } } }, { $group: { _id: { $dayOfMonth: { date: '$createdAt', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' } } }]),
         Expense.aggregate([{ $match: { createdAt: { $gte: monthStart, $lt: monthEnd } } }, { $group: { _id: { $dayOfMonth: { date: '$createdAt', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' } } }]),
-        Payment.aggregate([{ $match: { createdAt: { $gte: dayStart, $lt: dayEnd } } }, { $group: { _id: '$method', amount: { $sum: '$amount' }, count: { $sum: 1 } } }]),
+        Payment.aggregate([{ $match: { ...financialPaymentFilter, createdAt: { $gte: dayStart, $lt: dayEnd } } }, { $group: { _id: '$method', amount: { $sum: '$amount' }, count: { $sum: 1 } } }]),
         FinePayment.aggregate([{ $match: { createdAt: { $gte: dayStart, $lt: dayEnd } } }, { $group: { _id: '$method', amount: { $sum: '$amount' }, count: { $sum: 1 } } }]),
       ])
 
