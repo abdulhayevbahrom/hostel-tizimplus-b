@@ -101,6 +101,22 @@ class StudentContractController {
     if (operations.length) await ContractInstallment.bulkWrite(operations);
   }
 
+  async validateInstallmentAmounts(contract) {
+    const desiredByIndex = new Map(
+      buildContractInstallments(contract).map((item) => [item.periodIndex, item]),
+    );
+    const existingInstallments = await ContractInstallment.find({
+      contract: contract._id,
+    }).select("periodIndex paidAmount");
+    const invalidInstallment = existingInstallments.find((existing) => {
+      const desired = desiredByIndex.get(existing.periodIndex);
+      return desired && (existing.paidAmount || 0) > desired.amount;
+    });
+    return invalidInstallment
+      ? "Yangi shartnoma summasi to‘langan summadan kam bo‘lmasligi kerak"
+      : null;
+  }
+
   async ensureInstallments(contract) {
     if (
       contract.totalAmount == null ||
@@ -311,23 +327,25 @@ class StudentContractController {
           res,
           "Tugash sanasi boshlanish sanasidan keyin bo‘lishi kerak",
         );
-      const baseFinancialChanged =
+      const scheduleChanged =
         existing.paymentType !== payload.paymentType ||
-        existing.paymentAmount !== payload.paymentAmount ||
         new Date(existing.startDate).getTime() !==
           new Date(payload.startDate).getTime();
+      const paymentAmountChanged =
+        existing.paymentAmount !== payload.paymentAmount;
       const endDateChanged =
         new Date(existing.endDate).getTime() !==
         new Date(payload.endDate).getTime();
-      const financialChanged = baseFinancialChanged || endDateChanged;
+      const financialChanged =
+        scheduleChanged || paymentAmountChanged || endDateChanged;
       const paidExists = await ContractInstallment.exists({
         contract: req.params.id,
         paidAmount: { $gt: 0 },
       });
-      if (paidExists && baseFinancialChanged)
+      if (paidExists && scheduleChanged)
         return ApiResponse.conflict(
           res,
-          "To‘lov qilingan shartnomaning boshlanish sanasi yoki tarifini o‘zgartirib bo‘lmaydi",
+          "To‘lov qilingan shartnomaning boshlanish sanasi yoki turini o‘zgartirib bo‘lmaydi",
         );
       if (
         paidExists &&
@@ -338,6 +356,16 @@ class StudentContractController {
           res,
           "To‘lov qilingan shartnomaning tugash sanasini faqat uzaytirish mumkin",
         );
+      if (paidExists && financialChanged) {
+        const nextContract = {
+          ...existing.toObject(),
+          ...payload,
+          _id: existing._id,
+          student: existing.student,
+        };
+        const installmentError = await this.validateInstallmentAmounts(nextContract);
+        if (installmentError) return ApiResponse.conflict(res, installmentError);
+      }
       if (payload.status === "cancelled" && existing.status !== "cancelled") {
         const now = new Date();
         payload.cancelledAt = now;
