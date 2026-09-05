@@ -205,9 +205,14 @@ class StudentController {
       today.setUTCHours(0, 0, 0, 0)
       const todayEnd = new Date(today)
       todayEnd.setUTCHours(23, 59, 59, 999)
-      const activeContracts = await StudentContract.find({ student: { $in: students.map((student) => student._id) }, status: 'active', startDate: { $lte: todayEnd }, endDate: { $gte: today } }).select('student endDate')
-      const contractEndByStudent = new Map(activeContracts.map((contract) => [contract.student.toString(), contract.endDate]))
-      const rows = students.map((student) => ({ ...student.toJSON(), activeContractEndDate: contractEndByStudent.get(student.id) || null }))
+      const activeContracts = await StudentContract.find({ student: { $in: students.map((student) => student._id) }, status: 'active', startDate: { $lte: todayEnd }, endDate: { $gte: today } })
+        .select('student room endDate')
+        .populate('room', 'roomNumber block floor')
+      const activeContractByStudent = new Map(activeContracts.map((contract) => [contract.student.toString(), contract]))
+      const rows = students.map((student) => {
+        const activeContract = activeContractByStudent.get(student.id)
+        return { ...student.toJSON(), activeContractEndDate: activeContract?.endDate || null, activeRoom: activeContract?.room || null }
+      })
       return ApiResponse.ok(res, { students: rows, pagination: { page: currentPage, limit, total, totalPages } })
     } catch (error) { return next(error) }
   }
