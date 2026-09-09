@@ -190,6 +190,24 @@ class StudentController {
         const studentIds = await StudentContract.distinct('student', { room: req.query.room, status: 'active', startDate: { $lte: todayEnd }, endDate: { $gte: todayStart } })
         filter._id = { $in: studentIds }
       }
+      const now = new Date()
+      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+      const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999)
+      const [contractStudentIds, currentContractStudentIds] = await Promise.all([
+        StudentContract.distinct('student'),
+        StudentContract.distinct('student', { status: 'active', startDate: { $lte: todayEnd }, endDate: { $gte: todayStart } }),
+      ])
+      const currentContractStudentIdSet = new Set(currentContractStudentIds.map((id) => id.toString()))
+      const historicalOnlyStudentIds = contractStudentIds.filter((id) => !currentContractStudentIdSet.has(id.toString()))
+      if (historicalOnlyStudentIds.length) {
+        const visibleStudentFilter = { _id: { $nin: historicalOnlyStudentIds } }
+        if (filter._id) {
+          filter.$and = [...(filter.$and || []), { _id: filter._id }, visibleStudentFilter]
+          delete filter._id
+        } else {
+          filter._id = visibleStudentFilter._id
+        }
+      }
       const limit = 25
       const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1)
       const total = await Student.countDocuments(filter)
@@ -201,11 +219,7 @@ class StudentController {
         .sort({ createdAt: -1 })
         .skip((currentPage - 1) * limit)
         .limit(limit)
-      const today = new Date()
-      today.setUTCHours(0, 0, 0, 0)
-      const todayEnd = new Date(today)
-      todayEnd.setUTCHours(23, 59, 59, 999)
-      const activeContracts = await StudentContract.find({ student: { $in: students.map((student) => student._id) }, status: 'active', startDate: { $lte: todayEnd }, endDate: { $gte: today } })
+      const activeContracts = await StudentContract.find({ student: { $in: students.map((student) => student._id) }, status: 'active', startDate: { $lte: todayEnd }, endDate: { $gte: todayStart } })
         .select('student room endDate')
         .populate('room', 'roomNumber block floor')
       const activeContractByStudent = new Map(activeContracts.map((contract) => [contract.student.toString(), contract]))

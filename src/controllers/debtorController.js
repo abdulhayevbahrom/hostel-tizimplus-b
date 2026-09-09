@@ -29,6 +29,17 @@ class DebtorController {
         .populate('contract', 'contractNumber')
         .populate('allocations.installment', 'periodKey')
         .sort({ createdAt: -1 })
+      const allStudentInstallments = await ContractInstallment.find({ student: { $in: studentIds.map((id) => new mongoose.Types.ObjectId(id)) }, contract: { $in: financialContractIds } })
+        .populate({ path: 'contract', select: 'contractNumber status room startDate endDate paymentType', populate: { path: 'room', select: 'roomNumber block floor' } })
+        .sort({ dueDate: 1, periodIndex: 1 })
+      const periodsByStudent = new Map()
+      allStudentInstallments.forEach((item) => {
+        if (!item.contract) return
+        const key = item.student.toString()
+        if (!periodsByStudent.has(key)) periodsByStudent.set(key, [])
+        const debt = Math.max(0, item.amount - item.paidAmount)
+        periodsByStudent.get(key).push({ id: item.id, contractId: item.contract.id, contractNumber: item.contract.contractNumber, periodKey: item.periodKey, dueDate: item.dueDate, amount: item.amount, paidAmount: item.paidAmount, debt, status: item.status, isUpcoming: new Date(item.dueDate) > todayEnd, room: item.contract.room })
+      })
       const paymentsByStudent = new Map()
       paymentRows.forEach((payment) => { const key = payment.student.toString(); if (!paymentsByStudent.has(key)) paymentsByStudent.set(key, []); paymentsByStudent.get(key).push(payment) })
       const grouped = new Map()
@@ -51,7 +62,8 @@ class DebtorController {
         const paymentHistory = paymentsByStudent.get(item.student.id) || []
         const lastPayment = paymentHistory[0]
         const deadline = deadlinesByStudent.get(item.student.id)
-        return { ...item, contracts: [...item.contracts.values()], periodCount: item.periods.length, oldestDueDate: item.periods[0]?.dueDate, lastPaymentAt: lastPayment?.createdAt || null, lastPaymentAmount: lastPayment?.amount || 0, paymentHistory, debtStatus: item.paidTowardsDebt > 0 ? 'partial' : 'unpaid', paymentDeadline: deadline?.deadline || null, deadlineSetBy: deadline?.setBy || null, isDeadlineReached: Boolean(deadline && new Date(deadline.deadline) <= todayEnd) }
+        const allPeriods = periodsByStudent.get(item.student.id) || item.periods
+        return { ...item, contracts: [...item.contracts.values()], periods: allPeriods, debtPeriods: item.periods, periodCount: item.periods.length, oldestDueDate: item.periods[0]?.dueDate, lastPaymentAt: lastPayment?.createdAt || null, lastPaymentAmount: lastPayment?.amount || 0, paymentHistory, debtStatus: item.paidTowardsDebt > 0 ? 'partial' : 'unpaid', paymentDeadline: deadline?.deadline || null, deadlineSetBy: deadline?.setBy || null, isDeadlineReached: Boolean(deadline && new Date(deadline.deadline) <= todayEnd) }
       }).sort((a, b) => b.totalDebt - a.totalDebt)
       const scheduledAmount = allInstallments.reduce((sum, item) => sum + item.amount, 0)
       const paidAmount = allInstallments.reduce((sum, item) => sum + item.paidAmount, 0)
