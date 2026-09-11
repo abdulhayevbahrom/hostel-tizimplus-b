@@ -1,5 +1,6 @@
 import mongoose from 'mongoose'
 import { BuildingBlock } from '../models/BuildingBlock.js'
+import { Payment } from '../models/Payment.js'
 import { Room } from '../models/Room.js'
 import { StudentContract } from '../models/StudentContract.js'
 import { ApiResponse } from '../utils/response.js'
@@ -23,6 +24,13 @@ const occupancyPeriod = (period) => {
     start: new Date(year, month - 1, 1),
     end: new Date(year, month, 1),
   }
+}
+
+const periodKey = (period) => {
+  const value = String(period || '')
+  if (/^\d{4}-\d{2}$/.test(value)) return value
+  const today = new Date()
+  return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`
 }
 
 class RoomController {
@@ -90,10 +98,40 @@ class RoomController {
       if (!room) return ApiResponse.notFound(res, 'Xona topilmadi')
       const period = occupancyPeriod(req.query.period)
       if (!period) return ApiResponse.badRequest(res, 'Oy YYYY-MM formatida bo‘lishi kerak')
+      const selectedPeriodKey = periodKey(req.query.period)
       const contracts = await StudentContract.find({ room: room._id, status: 'active', startDate: { $lt: period.end }, endDate: { $gte: period.start } })
         .populate({ path: 'student', select: 'fullName phone parentPhone photo university faculty course gender', populate: [{ path: 'university', select: 'name' }, { path: 'faculty', select: 'name' }] })
         .sort({ startDate: 1 })
-      const students = contracts.filter((item) => item.student).map((contract) => ({ student: contract.student, contract: { id: contract.id, contractNumber: contract.contractNumber, startDate: contract.startDate, endDate: contract.endDate, paymentType: contract.paymentType, paymentAmount: contract.paymentAmount } }))
+      const contractIds = contracts.map((contract) => contract._id)
+      const advancePayments = await Payment.find({ status: 'active', cancelledAt: null, contract: { $in: contractIds } })
+        .select('contract amount allocations createdAt')
+        .populate({ path: 'allocations.installment', select: 'periodKey' })
+        .lean()
+      const advanceByContract = new Map()
+      for (const payment of advancePayments) {
+        const installment = payment.allocations?.[0]?.installment
+        if (!installment?.periodKey) continue
+        if (installment.periodKey < selectedPeriodKey) continue
+        const key = payment.contract.toString()
+        const amount = payment.allocations?.[0]?.amount || payment.amount || 0
+        if (!advanceByContract.has(key)) advanceByContract.set(key, { totalAmount: 0, paymentCount: 0, periods: new Map() })
+        const group = advanceByContract.get(key)
+        group.totalAmount += amount
+        group.paymentCount += 1
+        group.periods.set(installment.periodKey, (group.periods.get(installment.periodKey) || 0) + amount)
+      }
+      const students = contracts.filter((item) => item.student).map((contract) => {
+        const advance = advanceByContract.get(contract._id.toString())
+        return {
+          student: contract.student,
+          contract: { id: contract.id, contractNumber: contract.contractNumber, startDate: contract.startDate, endDate: contract.endDate, paymentType: contract.paymentType, paymentAmount: contract.paymentAmount },
+          advancePayments: advance ? {
+            totalAmount: advance.totalAmount,
+            paymentCount: advance.paymentCount,
+            periods: [...advance.periods.entries()].map(([periodKey, amount]) => ({ periodKey, amount })).sort((first, second) => first.periodKey.localeCompare(second.periodKey)),
+          } : { totalAmount: 0, paymentCount: 0, periods: [] },
+        }
+      })
       return ApiResponse.ok(res, { room, students, occupiedCount: students.length, availableCount: Math.max(0, room.capacity - students.length) })
     } catch (error) { return next(error) }
   }
