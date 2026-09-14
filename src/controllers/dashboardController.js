@@ -112,10 +112,11 @@ class DashboardController {
       const usableRooms = rooms.filter((room) => room.status === 'available')
       const totalCapacity = usableRooms.reduce((sum, room) => sum + room.capacity, 0)
       const occupiedBeds = usableRooms.reduce((sum, room) => sum + Math.min(room.capacity, occupiedByRoom.get(room.id) || 0), 0)
-      const debtAmount = installments.reduce((sum, item) => sum + Math.max(0, item.amount - item.paidAmount), 0)
-      const debtorCount = new Set(installments.filter((item) => item.student && item.paidAmount < item.amount).map((item) => item.student.id)).size
+      const debtorInstallments = installments.filter((item) => item.student && item.contract)
+      const debtAmount = debtorInstallments.reduce((sum, item) => sum + Math.max(0, item.amount - item.paidAmount), 0)
+      const debtorCount = new Set(debtorInstallments.filter((item) => item.paidAmount < item.amount).map((item) => item.student.id)).size
       const debtorMap = new Map()
-      installments.filter((item) => item.student && item.paidAmount < item.amount).forEach((item) => {
+      debtorInstallments.filter((item) => item.paidAmount < item.amount).forEach((item) => {
         const key = item.student.id
         if (!debtorMap.has(key)) debtorMap.set(key, { student: item.student, room: item.contract?.room || null, debt: 0 })
         debtorMap.get(key).debt += Math.max(0, item.amount - item.paidAmount)

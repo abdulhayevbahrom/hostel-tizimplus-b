@@ -1,7 +1,7 @@
 import mongoose from 'mongoose'
 
 const imageSchema = new mongoose.Schema(
-  { url: String, displayUrl: String, thumbnailUrl: String },
+  { url: String, displayUrl: String, thumbnailUrl: String, deleteUrl: String },
   { _id: false },
 )
 
@@ -22,6 +22,7 @@ generalSettingSchema.set('toJSON', {
     result.id = result._id.toString()
     delete result._id
     delete result.__v
+    if (result.logo) delete result.logo.deleteUrl
   },
 })
 

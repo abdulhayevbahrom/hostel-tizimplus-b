@@ -1,6 +1,6 @@
 import { GeneralSetting } from '../models/GeneralSetting.js'
 import { ApiResponse } from '../utils/response.js'
-import { uploadImages } from '../utils/imgbb.js'
+import { deleteImages, uploadImages } from '../utils/imgbb.js'
 
 class GeneralSettingController {
   get = async (_req, res, next) => {
@@ -31,6 +31,7 @@ class GeneralSettingController {
         },
         { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true },
       )
+      if (current?.logo && logo?.url !== current.logo.url) await deleteImages([current.logo])
       req.app.get('io')?.emit('settings:changed', { occurredAt: new Date().toISOString() })
       return ApiResponse.ok(res, { settings }, 'Umumiy sozlamalar saqlandi')
     } catch (error) { return next(error) }

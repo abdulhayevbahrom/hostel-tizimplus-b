@@ -4,7 +4,7 @@ import { Payment } from '../models/Payment.js'
 import { Room } from '../models/Room.js'
 import { StudentContract } from '../models/StudentContract.js'
 import { ApiResponse } from '../utils/response.js'
-import { uploadImages } from '../utils/imgbb.js'
+import { deleteImages, uploadImages } from '../utils/imgbb.js'
 
 const occupancyPeriod = (period) => {
   const value = String(period || '')
@@ -156,9 +156,15 @@ class RoomController {
       const payload = this.cleanPayload(req.body)
       if (payload.block && !(await BuildingBlock.exists({ name: payload.block }))) return ApiResponse.badRequest(res, 'Bino yoki blokni sozlamalardan tanlang')
       if (payload.images.length + (req.files?.length || 0) > 8) return ApiResponse.badRequest(res, 'Eng ko‘pi 8 ta rasm saqlash mumkin')
+      const currentImages = room.images.map((image) => image.toObject())
+      const currentByUrl = new Map(currentImages.map((image) => [image.url, image]))
+      const retainedImages = payload.images.map((image) => currentByUrl.get(image.url)).filter(Boolean)
+      const retainedUrls = new Set(retainedImages.map((image) => image.url))
+      const removedImages = currentImages.filter((image) => !retainedUrls.has(image.url))
       const uploadedImages = await uploadImages(req.files)
-      room.set({ ...payload, images: [...payload.images, ...uploadedImages] })
+      room.set({ ...payload, images: [...retainedImages, ...uploadedImages] })
       await room.save()
+      await deleteImages(removedImages)
       this.emitChange(req, 'updated', room)
       return ApiResponse.ok(res, { room }, 'Xona yangilandi')
     } catch (error) { return next(error) }

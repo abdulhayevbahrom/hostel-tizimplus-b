@@ -11,7 +11,7 @@ const roomSchema = new mongoose.Schema(
     status: { type: String, enum: ['available', 'maintenance'], default: 'available' },
     note: { type: String, trim: true, maxlength: 500, default: '' },
     images: {
-      type: [{ url: { type: String, required: true }, displayUrl: { type: String, default: '' }, thumbnailUrl: { type: String, default: '' } }],
+      type: [{ url: { type: String, required: true }, displayUrl: { type: String, default: '' }, thumbnailUrl: { type: String, default: '' }, deleteUrl: { type: String, default: '' } }],
       default: [],
     },
   },
@@ -25,6 +25,7 @@ roomSchema.set('toJSON', {
     result.id = result._id.toString()
     delete result._id
     delete result.__v
+    result.images?.forEach((image) => delete image.deleteUrl)
     return result
   },
 })
