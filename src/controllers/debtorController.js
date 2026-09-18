@@ -21,7 +21,11 @@ class DebtorController {
         .populate({ path: 'student', select: 'fullName phone parentPhone photo university faculty course', populate: [{ path: 'university', select: 'name' }, { path: 'faculty', select: 'name' }] })
         .populate({ path: 'contract', select: 'contractNumber status room startDate endDate paymentType', populate: { path: 'room', select: 'roomNumber block floor' } })
         .sort({ dueDate: 1 })
-      const installments = allInstallments.filter((item) => item.paidAmount < item.amount)
+      // Legacy data may contain contracts whose student has already been
+      // removed. Such rows cannot be shown in the debtor list and therefore
+      // must not affect its summary either.
+      const reportInstallments = allInstallments.filter((item) => item.student && item.contract)
+      const installments = reportInstallments.filter((item) => item.paidAmount < item.amount)
 
       const deadlines = await DebtorDeadline.find({ periodKey: requestedPeriod, student: { $in: installments.map((item) => item.student?._id).filter(Boolean) } }).populate('setBy', 'firstname lastname role')
       const deadlinesByStudent = new Map(deadlines.map((item) => [item.student.toString(), item]))
@@ -56,10 +60,14 @@ class DebtorController {
         debtor.periods.push({ id: item.id, contractId: item.contract.id, contractNumber: item.contract.contractNumber, periodKey: item.periodKey, dueDate: item.dueDate, amount: item.amount, paidAmount: item.paidAmount, debt, status: item.status, isUpcoming, room: item.contract.room })
         debtor.contracts.set(item.contract.id, item.contract)
         if (isUpcoming) debtor.waitingAmount += debt
-        else debtor.totalDebt += debt
+        // For the current and previous periods every unpaid balance belongs in
+        // the debt total. The generated due date is only useful for marking an
+        // amount as overdue; it must not hide that amount from the selected
+        // month's debt.
+        debtor.totalDebt += debt
         debtor.paidTowardsDebt += item.paidAmount
         if (!isUpcoming && item.periodKey < currentKey) debtor.overdueDebt += debt
-        else if (!isUpcoming) debtor.currentDebt += debt
+        else debtor.currentDebt += debt
       }
       let debtors = [...grouped.values()].filter((item) => isFuturePeriod ? item.waitingAmount > 0 : item.totalDebt > 0).map((item) => {
         const paymentHistory = paymentsByStudent.get(item.student.id) || []
@@ -78,12 +86,12 @@ class DebtorController {
       const totalPages = Math.max(1, Math.ceil(total / limit))
       const page = Math.min(Math.max(1, Number.parseInt(req.query.page, 10) || 1), totalPages)
       const paginatedDebtors = debtors.slice((page - 1) * limit, page * limit)
-      const scheduledAmount = allInstallments.reduce((sum, item) => sum + item.amount, 0)
-      const paidAmount = allInstallments.reduce((sum, item) => sum + item.paidAmount, 0)
+      const scheduledAmount = reportInstallments.reduce((sum, item) => sum + item.amount, 0)
+      const paidAmount = reportInstallments.reduce((sum, item) => sum + item.paidAmount, 0)
       const outstanding = debtors.reduce((sum, item) => sum + item.totalDebt, 0)
       const waitingAmount = [...grouped.values()].reduce((sum, item) => sum + item.waitingAmount, 0)
       const paidByStudent = new Map()
-      allInstallments.forEach((item) => { if (item.student) paidByStudent.set(item.student.id, (paidByStudent.get(item.student.id) || 0) + item.paidAmount) })
+      reportInstallments.forEach((item) => { paidByStudent.set(item.student.id, (paidByStudent.get(item.student.id) || 0) + item.paidAmount) })
       const paidStudentCount = [...paidByStudent.values()].filter((amount) => amount > 0).length
       const noPaymentStudentCount = [...paidByStudent.values()].filter((amount) => amount <= 0).length
       const summary = { debtorCount: isFuturePeriod ? 0 : debtors.length, waitingCount: isFuturePeriod ? debtors.length : 0, totalDebt: isFuturePeriod ? 0 : outstanding, waitingAmount, scheduledAmount, paidAmount, paidStudentCount, noPaymentStudentCount, overdueDebt: debtors.reduce((sum, item) => sum + item.overdueDebt, 0), partialCount: debtors.filter((item) => item.debtStatus === 'partial').length, unpaidCount: debtors.filter((item) => item.debtStatus === 'unpaid').length }

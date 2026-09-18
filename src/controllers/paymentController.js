@@ -74,22 +74,26 @@ class PaymentController {
       const needle = String(search).trim().toLowerCase()
       if (needle) payments = payments.filter((item) => `${item.student?.fullName || ''} ${item.student?.phone || ''} ${item.contract?.contractNumber || ''}`.toLowerCase().includes(needle))
       const reportInstallments = period ? periodInstallments : await ContractInstallment.find({ contract: { $in: financialContractIds } }).select('student amount paidAmount periodKey dueDate').lean()
-      const billed = reportInstallments.reduce((sum, item) => sum + item.amount, 0)
-      const paid = reportInstallments.reduce((sum, item) => sum + item.paidAmount, 0)
       const validStudentIds = new Set(financialStudentIds.map((id) => id.toString()))
       const studentInstallments = reportInstallments.filter((item) => validStudentIds.has(item.student.toString()))
+      // Old orphaned contracts can remain in legacy data after their student was
+      // removed. They cannot appear in student/debtor lists, so exclude them
+      // from every summary card as well.
+      const billed = studentInstallments.reduce((sum, item) => sum + item.amount, 0)
+      const paid = studentInstallments.reduce((sum, item) => sum + item.paidAmount, 0)
       const allStudents = new Set(studentInstallments.map((item) => item.student.toString()))
       const paidStudents = new Set(studentInstallments.filter((item) => item.paidAmount > 0).map((item) => item.student.toString()))
       const now = new Date(); const currentKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
       const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999)
       const isFuturePeriod = Boolean(period && period > currentKey)
-      const dueInstallments = studentInstallments.filter((item) => new Date(item.dueDate) <= todayEnd)
       const waitingInstallments = studentInstallments.filter((item) => new Date(item.dueDate) > todayEnd)
-      const debt = dueInstallments.reduce((sum, item) => sum + Math.max(0, item.amount - item.paidAmount), 0)
-      const dueStudentIds = new Set(dueInstallments.map((item) => item.student.toString()))
-      const duePaidStudentIds = new Set(dueInstallments.filter((item) => item.paidAmount > 0).map((item) => item.student.toString()))
+      // Keep the financial cards on the same scope: billed and paid include every
+      // installment in the selected period, so debt must be their remaining
+      // balance too. Generated due dates only distinguish future-period
+      // installments that are still waiting.
+      const debt = isFuturePeriod ? 0 : studentInstallments.reduce((sum, item) => sum + Math.max(0, item.amount - item.paidAmount), 0)
       const waitingStudentIds = new Set(waitingInstallments.filter((item) => item.paidAmount < item.amount).map((item) => item.student.toString()))
-      return ApiResponse.ok(res, { payments, summary: { billed, paid, debt, paidStudents: paidStudents.size, unpaidStudents: Math.max(0, dueStudentIds.size - duePaidStudentIds.size), waitingStudents: waitingStudentIds.size, studentCount: allStudents.size, count: payments.length, period, isFuturePeriod } })
+      return ApiResponse.ok(res, { payments, summary: { billed, paid, debt, paidStudents: paidStudents.size, unpaidStudents: Math.max(0, allStudents.size - paidStudents.size), waitingStudents: waitingStudentIds.size, studentCount: allStudents.size, count: payments.length, period, isFuturePeriod } })
     } catch (error) { return next(error) }
   }
 

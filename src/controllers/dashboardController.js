@@ -7,6 +7,7 @@ import { FinePayment } from '../models/FinePayment.js'
 import { Payment } from '../models/Payment.js'
 import { Room } from '../models/Room.js'
 import { SalaryPayment } from '../models/SalaryPayment.js'
+import { Student } from '../models/Student.js'
 import { StudentContract } from '../models/StudentContract.js'
 import { ApiResponse } from '../utils/response.js'
 
@@ -43,8 +44,10 @@ class DashboardController {
       const dayStart = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate())
       const dayEnd = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate() + 1)
       const selectedDayEnd = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate(), 23, 59, 59, 999)
-      const activeContractFilter = { status: { $in: ['active', 'completed'] }, startDate: { $lte: selectedDayEnd }, endDate: { $gte: dayStart } }
-      const financialContractIds = await StudentContract.distinct('_id', { status: { $ne: 'cancelled' } })
+      const validStudentIds = await Student.distinct('_id')
+      const validStudentFilter = { student: { $in: validStudentIds } }
+      const activeContractFilter = { student: { $in: validStudentIds }, status: { $in: ['active', 'completed'] }, startDate: { $lte: selectedDayEnd }, endDate: { $gte: dayStart } }
+      const financialContractIds = await StudentContract.distinct('_id', { student: { $in: validStudentIds }, status: { $ne: 'cancelled' } })
       const financialPaymentFilter = { contract: { $in: financialContractIds } }
       const [
         rooms,
@@ -80,30 +83,30 @@ class DashboardController {
         StudentContract.find(activeContractFilter).select('student room'),
         Employee.find({ isActive: true }).select('salary'),
         sumField(Payment, { ...financialPaymentFilter, createdAt: { $gte: monthStart, $lt: monthEnd } }),
-        sumField(FinePayment, { createdAt: { $gte: monthStart, $lt: monthEnd } }),
+        sumField(FinePayment, { ...validStudentFilter, createdAt: { $gte: monthStart, $lt: monthEnd } }),
         sumField(Expense, { createdAt: { $gte: monthStart, $lt: monthEnd } }),
         sumField(SalaryPayment, { period: monthKey }),
-        ContractInstallment.find({ periodKey: monthKey, dueDate: { $lte: selectedDayEnd }, contract: { $in: financialContractIds } }).select('student contract amount paidAmount status dueDate').populate('student', 'fullName').populate({ path: 'contract', select: 'room', populate: { path: 'room', select: 'roomNumber block' } }),
-        Fine.find({ $expr: { $lt: ['$paidAmount', '$amount'] } }).select('amount paidAmount student'),
-        Attendance.find({ attendanceDate: dayKey }).select('status'),
+        ContractInstallment.find({ periodKey: monthKey, contract: { $in: financialContractIds } }).select('student contract amount paidAmount status dueDate').populate('student', 'fullName').populate({ path: 'contract', select: 'room', populate: { path: 'room', select: 'roomNumber block' } }),
+        Fine.find({ ...validStudentFilter, $expr: { $lt: ['$paidAmount', '$amount'] } }).select('amount paidAmount student'),
+        Attendance.find({ ...validStudentFilter, attendanceDate: dayKey }).select('status'),
         Payment.find(financialPaymentFilter).populate('student', 'fullName').sort({ createdAt: -1 }).limit(5),
-        FinePayment.find().populate('student', 'fullName').sort({ createdAt: -1 }).limit(5),
+        FinePayment.find(validStudentFilter).populate('student', 'fullName').sort({ createdAt: -1 }).limit(5),
         Expense.find().populate('createdBy', 'firstname lastname').sort({ createdAt: -1 }).limit(5),
         SalaryPayment.find().populate('employee', 'firstname lastname').sort({ createdAt: -1 }).limit(5),
         Payment.aggregate([{ $match: { ...financialPaymentFilter, createdAt: { $gte: new Date(now.getFullYear(), now.getMonth() - 5, 1) } } }, { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$createdAt', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' } } }]),
-        FinePayment.aggregate([{ $match: { createdAt: { $gte: new Date(now.getFullYear(), now.getMonth() - 5, 1) } } }, { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$createdAt', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' } } }]),
+        FinePayment.aggregate([{ $match: { ...validStudentFilter, createdAt: { $gte: new Date(now.getFullYear(), now.getMonth() - 5, 1) } } }, { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$createdAt', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' } } }]),
         Expense.aggregate([{ $match: { createdAt: { $gte: new Date(now.getFullYear(), now.getMonth() - 5, 1) } } }, { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$createdAt', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' } } }]),
         SalaryPayment.aggregate([{ $match: { period: { $gte: recentPeriods(now)[0] } } }, { $group: { _id: '$period', amount: { $sum: '$amount' } } }]),
         sumField(Payment, { ...financialPaymentFilter, createdAt: { $gte: dayStart, $lt: dayEnd } }),
-        sumField(FinePayment, { createdAt: { $gte: dayStart, $lt: dayEnd } }),
+        sumField(FinePayment, { ...validStudentFilter, createdAt: { $gte: dayStart, $lt: dayEnd } }),
         sumField(Expense, { createdAt: { $gte: dayStart, $lt: dayEnd } }),
         Payment.aggregate([{ $match: { ...financialPaymentFilter, createdAt: { $gte: monthStart, $lt: monthEnd } } }, { $group: { _id: '$method', amount: { $sum: '$amount' }, count: { $sum: 1 } } }]),
-        FinePayment.aggregate([{ $match: { createdAt: { $gte: monthStart, $lt: monthEnd } } }, { $group: { _id: '$method', amount: { $sum: '$amount' }, count: { $sum: 1 } } }]),
+        FinePayment.aggregate([{ $match: { ...validStudentFilter, createdAt: { $gte: monthStart, $lt: monthEnd } } }, { $group: { _id: '$method', amount: { $sum: '$amount' }, count: { $sum: 1 } } }]),
         Payment.aggregate([{ $match: { ...financialPaymentFilter, createdAt: { $gte: monthStart, $lt: monthEnd } } }, { $group: { _id: { $dayOfMonth: { date: '$createdAt', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' } } }]),
-        FinePayment.aggregate([{ $match: { createdAt: { $gte: monthStart, $lt: monthEnd } } }, { $group: { _id: { $dayOfMonth: { date: '$createdAt', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' } } }]),
+        FinePayment.aggregate([{ $match: { ...validStudentFilter, createdAt: { $gte: monthStart, $lt: monthEnd } } }, { $group: { _id: { $dayOfMonth: { date: '$createdAt', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' } } }]),
         Expense.aggregate([{ $match: { createdAt: { $gte: monthStart, $lt: monthEnd } } }, { $group: { _id: { $dayOfMonth: { date: '$createdAt', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' } } }]),
         Payment.aggregate([{ $match: { ...financialPaymentFilter, createdAt: { $gte: dayStart, $lt: dayEnd } } }, { $group: { _id: '$method', amount: { $sum: '$amount' }, count: { $sum: 1 } } }]),
-        FinePayment.aggregate([{ $match: { createdAt: { $gte: dayStart, $lt: dayEnd } } }, { $group: { _id: '$method', amount: { $sum: '$amount' }, count: { $sum: 1 } } }]),
+        FinePayment.aggregate([{ $match: { ...validStudentFilter, createdAt: { $gte: dayStart, $lt: dayEnd } } }, { $group: { _id: '$method', amount: { $sum: '$amount' }, count: { $sum: 1 } } }]),
       ])
 
       const activeStudentIds = new Set(activeContracts.map((item) => item.student.toString()))
@@ -113,10 +116,13 @@ class DashboardController {
       const totalCapacity = usableRooms.reduce((sum, room) => sum + room.capacity, 0)
       const occupiedBeds = usableRooms.reduce((sum, room) => sum + Math.min(room.capacity, occupiedByRoom.get(room.id) || 0), 0)
       const debtorInstallments = installments.filter((item) => item.student && item.contract)
-      const debtAmount = debtorInstallments.reduce((sum, item) => sum + Math.max(0, item.amount - item.paidAmount), 0)
-      const debtorCount = new Set(debtorInstallments.filter((item) => item.paidAmount < item.amount).map((item) => item.student.id)).size
+      const isFuturePeriod = monthKey > current.monthKey
+      const billedAmount = debtorInstallments.reduce((sum, item) => sum + item.amount, 0)
+      const installmentPaidAmount = debtorInstallments.reduce((sum, item) => sum + item.paidAmount, 0)
+      const debtAmount = isFuturePeriod ? 0 : debtorInstallments.reduce((sum, item) => sum + Math.max(0, item.amount - item.paidAmount), 0)
+      const debtorCount = isFuturePeriod ? 0 : new Set(debtorInstallments.filter((item) => item.paidAmount < item.amount).map((item) => item.student.id)).size
       const debtorMap = new Map()
-      debtorInstallments.filter((item) => item.paidAmount < item.amount).forEach((item) => {
+      debtorInstallments.filter((item) => !isFuturePeriod && item.paidAmount < item.amount).forEach((item) => {
         const key = item.student.id
         if (!debtorMap.has(key)) debtorMap.set(key, { student: item.student, room: item.contract?.room || null, debt: 0 })
         debtorMap.get(key).debt += Math.max(0, item.amount - item.paidAmount)
@@ -168,7 +174,7 @@ class DashboardController {
         students: { active: activeStudentIds.size },
         rooms: { total: rooms.length, available: usableRooms.length, maintenance: rooms.length - usableRooms.length, capacity: totalCapacity, occupied: occupiedBeds, free: Math.max(0, totalCapacity - occupiedBeds), occupancyRate: totalCapacity ? Math.round((occupiedBeds / totalCapacity) * 100) : 0 },
         finance: { income: totalIncome, incomeCount: totalIncomeCount, fineIncome: totalIncome - income.amount, fineIncomeCount: totalIncomeCount - income.count, expenses: expenses.amount, expenseCount: expenses.count, salaryPaid: salaryPaid.amount, salaryPaymentCount: salaryPaid.count, salaryFund, outflow, balance: totalIncome - outflow, todayIncome: totalTodayIncome, todayIncomeCount: totalTodayIncomeCount, todayFineIncome: todayFineIncome.amount, todayExpense: todayExpense.amount, todayBalance: totalTodayIncome - todayExpense.amount },
-        debt: { amount: debtAmount, students: debtorCount, fineAmount: fineDebt, fineStudents: fineStudentCount },
+        debt: { amount: debtAmount, billedAmount, paidAmount: installmentPaidAmount, students: debtorCount, fineAmount: fineDebt, fineStudents: fineStudentCount },
         attendance: attendanceSummary,
         employees: { active: employees.length },
         transactions,
