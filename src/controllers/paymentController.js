@@ -5,6 +5,7 @@ import { ContractInstallment } from '../models/ContractInstallment.js'
 import { CashSession } from '../models/CashSession.js'
 import { Employee } from '../models/Employee.js'
 import { Notification } from '../models/Notification.js'
+import { Student } from '../models/Student.js'
 import { ApiResponse } from '../utils/response.js'
 
 const paymentPopulate = [
@@ -62,7 +63,10 @@ class PaymentController {
       const filter = {}
       if (method && ['cash', 'card', 'bank', 'online'].includes(method)) filter.method = method
       if (from || to) filter.createdAt = { ...(from ? { $gte: new Date(`${from}T00:00:00`) } : {}), ...(to ? { $lte: new Date(`${to}T23:59:59.999`) } : {}) }
-      const financialContractIds = await StudentContract.distinct('_id', { status: { $ne: 'cancelled' } })
+      const [financialContractIds, financialStudentIds] = await Promise.all([
+        StudentContract.distinct('_id', { status: { $ne: 'cancelled' } }),
+        Student.distinct('_id'),
+      ])
       const periodInstallments = period ? await ContractInstallment.find({ periodKey: period, contract: { $in: financialContractIds } }).select('_id student amount paidAmount dueDate').lean() : []
       if (period) filter['allocations.installment'] = { $in: periodInstallments.map((item) => item._id) }
       filter.contract = { $in: financialContractIds }
@@ -72,13 +76,15 @@ class PaymentController {
       const reportInstallments = period ? periodInstallments : await ContractInstallment.find({ contract: { $in: financialContractIds } }).select('student amount paidAmount periodKey dueDate').lean()
       const billed = reportInstallments.reduce((sum, item) => sum + item.amount, 0)
       const paid = reportInstallments.reduce((sum, item) => sum + item.paidAmount, 0)
-      const allStudents = new Set(reportInstallments.map((item) => item.student.toString()))
-      const paidStudents = new Set(reportInstallments.filter((item) => item.paidAmount > 0).map((item) => item.student.toString()))
+      const validStudentIds = new Set(financialStudentIds.map((id) => id.toString()))
+      const studentInstallments = reportInstallments.filter((item) => validStudentIds.has(item.student.toString()))
+      const allStudents = new Set(studentInstallments.map((item) => item.student.toString()))
+      const paidStudents = new Set(studentInstallments.filter((item) => item.paidAmount > 0).map((item) => item.student.toString()))
       const now = new Date(); const currentKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
       const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999)
       const isFuturePeriod = Boolean(period && period > currentKey)
-      const dueInstallments = reportInstallments.filter((item) => new Date(item.dueDate) <= todayEnd)
-      const waitingInstallments = reportInstallments.filter((item) => new Date(item.dueDate) > todayEnd)
+      const dueInstallments = studentInstallments.filter((item) => new Date(item.dueDate) <= todayEnd)
+      const waitingInstallments = studentInstallments.filter((item) => new Date(item.dueDate) > todayEnd)
       const debt = dueInstallments.reduce((sum, item) => sum + Math.max(0, item.amount - item.paidAmount), 0)
       const dueStudentIds = new Set(dueInstallments.map((item) => item.student.toString()))
       const duePaidStudentIds = new Set(dueInstallments.filter((item) => item.paidAmount > 0).map((item) => item.student.toString()))
