@@ -182,6 +182,7 @@ class StudentController {
       if (mongoose.isValidObjectId(req.query.faculty)) filter.faculty = req.query.faculty
       const course = Number.parseInt(req.query.course, 10)
       if (course >= 1 && course <= 6) filter.course = course
+      if (['daytime', 'evening', 'extramural', 'employed'].includes(req.query.educationType)) filter.educationType = req.query.educationType
       if (['green', 'warning', 'red'].includes(req.query.studentStatus)) filter.studentStatus = req.query.studentStatus
       if (mongoose.isValidObjectId(req.query.room)) {
         const now = new Date()
@@ -222,10 +223,14 @@ class StudentController {
       const activeContracts = await StudentContract.find({ student: { $in: students.map((student) => student._id) }, status: 'active', startDate: { $lte: todayEnd }, endDate: { $gte: todayStart } })
         .select('student room endDate')
         .populate('room', 'roomNumber block floor')
+      const studentsWithContract = new Set((await StudentContract.distinct('student', {
+        student: { $in: students.map((student) => student._id) },
+        status: { $ne: 'cancelled' },
+      })).map((id) => id.toString()))
       const activeContractByStudent = new Map(activeContracts.map((contract) => [contract.student.toString(), contract]))
       const rows = students.map((student) => {
         const activeContract = activeContractByStudent.get(student.id)
-        return { ...student.toJSON(), activeContractEndDate: activeContract?.endDate || null, activeRoom: activeContract?.room || null }
+        return { ...student.toJSON(), hasContract: studentsWithContract.has(student.id), activeContractEndDate: activeContract?.endDate || null, activeRoom: activeContract?.room || null }
       })
       return ApiResponse.ok(res, { students: rows, pagination: { page: currentPage, limit, total, totalPages } })
     } catch (error) { return next(error) }

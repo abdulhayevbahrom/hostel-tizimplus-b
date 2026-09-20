@@ -39,7 +39,7 @@ class ReportController {
       const end = new Date(year, month, 1)
       const dateMatch = { $gte: start, $lt: end }
       const financialContractIds = await StudentContract.distinct('_id', { status: { $ne: 'cancelled' } })
-      const paymentMatch = { contract: { $in: financialContractIds }, createdAt: dateMatch }
+      const paymentMatch = { contract: { $in: financialContractIds }, status: { $ne: 'cancelled' }, cancelledAt: null, createdAt: dateMatch }
 
       const [incomeRows, expenseRows, salaryRows, methods, categories, details] = await Promise.all([
         aggregateByDay(Payment, paymentMatch, 'createdAt'),
@@ -75,7 +75,7 @@ class ReportController {
       const dateMatch = { $gte: start, $lt: end }
       const periodMatch = { $gte: `${year}-01`, $lte: `${year}-12` }
       const financialContractIds = await StudentContract.distinct('_id', { status: { $ne: 'cancelled' } })
-      const paymentMatch = { contract: { $in: financialContractIds }, createdAt: dateMatch }
+      const paymentMatch = { contract: { $in: financialContractIds }, status: { $ne: 'cancelled' }, cancelledAt: null, createdAt: dateMatch }
 
       const [incomeRows, expenseRows, salaryRows, methods, categories, details] = await Promise.all([
         aggregateByMonth(Payment, paymentMatch, 'createdAt'),

@@ -48,7 +48,7 @@ class DashboardController {
       const validStudentFilter = { student: { $in: validStudentIds } }
       const activeContractFilter = { student: { $in: validStudentIds }, status: { $in: ['active', 'completed'] }, startDate: { $lte: selectedDayEnd }, endDate: { $gte: dayStart } }
       const financialContractIds = await StudentContract.distinct('_id', { student: { $in: validStudentIds }, status: { $ne: 'cancelled' } })
-      const financialPaymentFilter = { contract: { $in: financialContractIds } }
+      const financialPaymentFilter = { contract: { $in: financialContractIds }, status: { $ne: 'cancelled' }, cancelledAt: null }
       const [
         rooms,
         activeContracts,

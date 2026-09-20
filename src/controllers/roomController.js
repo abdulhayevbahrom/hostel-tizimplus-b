@@ -100,7 +100,7 @@ class RoomController {
       if (!period) return ApiResponse.badRequest(res, 'Oy YYYY-MM formatida bo‘lishi kerak')
       const selectedPeriodKey = periodKey(req.query.period)
       const contracts = await StudentContract.find({ room: room._id, status: 'active', startDate: { $lt: period.end }, endDate: { $gte: period.start } })
-        .populate({ path: 'student', select: 'fullName phone parentPhone photo university faculty course gender', populate: [{ path: 'university', select: 'name' }, { path: 'faculty', select: 'name' }] })
+        .populate({ path: 'student', select: 'fullName phone parentPhone photo university faculty course gender educationType', populate: [{ path: 'university', select: 'name' }, { path: 'faculty', select: 'name' }] })
         .sort({ startDate: 1 })
       const contractIds = contracts.map((contract) => contract._id)
       const advancePayments = await Payment.find({ status: 'active', cancelledAt: null, contract: { $in: contractIds } })
