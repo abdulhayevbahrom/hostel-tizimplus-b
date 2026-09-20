@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import { Student } from "../models/Student.js";
 import { StudentContract } from "../models/StudentContract.js";
 import { ContractInstallment } from "../models/ContractInstallment.js";
+import { Payment } from "../models/Payment.js";
 import { Room } from "../models/Room.js";
 import { ApiResponse } from "../utils/response.js";
 import {
@@ -220,27 +221,47 @@ class StudentContractController {
       if (["student_contract", "standard_contract"].includes(req.query.contractType)) {
         filter.student = { $in: await Student.distinct("_id", { hasTaxContract: true, taxContractType: req.query.contractType }) };
       }
-      const currentPeriod = `${today.getUTCFullYear()}-${String(today.getUTCMonth() + 1).padStart(2, "0")}`;
+      const currentPeriod = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
       const summaryFilter = {
         ...(filter.student ? { student: filter.student } : {}),
         ...(filter.room ? { room: filter.room } : {}),
       };
+      const validStudentIds = await Student.distinct("_id");
+      summaryFilter.student = summaryFilter.student
+        ? { $in: summaryFilter.student.$in.filter((id) => validStudentIds.some((validId) => validId.equals(id))) }
+        : { $in: validStudentIds };
       const summaryContracts = await StudentContract.find(summaryFilter).select("_id status").lean();
       const currentMonthRows = await ContractInstallment.aggregate([
         {
           $match: {
             periodKey: currentPeriod,
             contract: { $in: summaryContracts.map((contract) => contract._id) },
+            student: { $in: validStudentIds },
           },
         },
-        { $group: { _id: null, amount: { $sum: "$amount" } } },
+        { $group: { _id: "$contract", amount: { $sum: "$amount" } } },
       ]);
       const summary = summaryContracts.reduce((result, contract) => {
         result.total += 1;
         if (Object.prototype.hasOwnProperty.call(result, contract.status)) result[contract.status] += 1;
         return result;
-      }, { total: 0, active: 0, completed: 0, cancelled: 0, amount: 0 });
-      summary.amount = currentMonthRows[0]?.amount || 0;
+      }, { total: 0, active: 0, completed: 0, cancelled: 0, amount: 0, amountByStatus: { active: 0, completed: 0, cancelled: 0 } });
+      const statusByContract = new Map(summaryContracts.map((contract) => [String(contract._id), contract.status]));
+      for (const row of currentMonthRows) {
+        const status = statusByContract.get(String(row._id));
+        if (status !== 'cancelled') summary.amount += row.amount;
+        if (Object.prototype.hasOwnProperty.call(summary.amountByStatus, status)) {
+          summary.amountByStatus[status] += row.amount;
+        }
+      }
+      const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+      const monthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+      const cancelledIds = summaryContracts.filter((contract) => contract.status === 'cancelled').map((contract) => contract._id);
+      const cancelledPaidRows = await Payment.aggregate([
+        { $match: { contract: { $in: cancelledIds }, student: { $in: validStudentIds }, status: 'active', cancelledAt: null, createdAt: { $gte: monthStart, $lt: monthEnd } } },
+        { $group: { _id: null, amount: { $sum: '$amount' } } },
+      ]);
+      summary.cancelledPaidAmount = cancelledPaidRows[0]?.amount || 0;
       const contracts = await StudentContract.find(filter)
         .populate({ path: "student", select: "fullName phone parentPhone photo university faculty course gender hasTaxContract taxContractType", populate: [{ path: "university", select: "name shortName" }, { path: "faculty", select: "name" }] })
         .populate("room", "roomNumber block floor")
