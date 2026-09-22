@@ -1,5 +1,6 @@
 import cors from 'cors'
 import express from 'express'
+
 import { buildingBlockRouter } from './routes/buildingBlockRoutes.js'
 import { employeeRouter } from './routes/employeeRoutes.js'
 import { facultyRouter } from './routes/facultyRoutes.js'
