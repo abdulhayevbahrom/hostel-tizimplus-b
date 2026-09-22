@@ -25,7 +25,9 @@ class DebtorController {
       // removed. Such rows cannot be shown in the debtor list and therefore
       // must not affect its summary either.
       const reportInstallments = allInstallments.filter((item) => item.student && item.contract)
-      const installments = reportInstallments.filter((item) => item.paidAmount < item.amount)
+      const installments = reportInstallments.filter((item) => (
+        item.paidAmount < item.amount && new Date(item.dueDate) <= todayEnd
+      ))
 
       const deadlines = await DebtorDeadline.find({ periodKey: requestedPeriod, student: { $in: installments.map((item) => item.student?._id).filter(Boolean) } }).populate('setBy', 'firstname lastname role')
       const deadlinesByStudent = new Map(deadlines.map((item) => [item.student.toString(), item]))
@@ -56,17 +58,13 @@ class DebtorController {
         if (!grouped.has(key)) grouped.set(key, { student: item.student, contracts: new Map(), periods: [], totalDebt: 0, waitingAmount: 0, overdueDebt: 0, currentDebt: 0, paidTowardsDebt: 0 })
         const debtor = grouped.get(key)
         const debt = Math.max(0, item.amount - item.paidAmount)
-        const isUpcoming = new Date(item.dueDate) > todayEnd
-        debtor.periods.push({ id: item.id, contractId: item.contract.id, contractNumber: item.contract.contractNumber, periodKey: item.periodKey, dueDate: item.dueDate, amount: item.amount, paidAmount: item.paidAmount, debt, status: item.status, isUpcoming, room: item.contract.room })
+        debtor.periods.push({ id: item.id, contractId: item.contract.id, contractNumber: item.contract.contractNumber, periodKey: item.periodKey, dueDate: item.dueDate, amount: item.amount, paidAmount: item.paidAmount, debt, status: item.status, isUpcoming: false, room: item.contract.room })
         debtor.contracts.set(item.contract.id, item.contract)
-        if (isUpcoming) debtor.waitingAmount += debt
-        // For the current and previous periods every unpaid balance belongs in
-        // the debt total. The generated due date is only useful for marking an
-        // amount as overdue; it must not hide that amount from the selected
-        // month's debt.
+        // Only installments whose due date has arrived are included above, so
+        // upcoming payments never appear in the debtor list or its totals.
         debtor.totalDebt += debt
         debtor.paidTowardsDebt += item.paidAmount
-        if (!isUpcoming && item.periodKey < currentKey) debtor.overdueDebt += debt
+        if (item.periodKey < currentKey) debtor.overdueDebt += debt
         else debtor.currentDebt += debt
       }
       let debtors = [...grouped.values()].filter((item) => isFuturePeriod ? item.waitingAmount > 0 : item.totalDebt > 0).map((item) => {
