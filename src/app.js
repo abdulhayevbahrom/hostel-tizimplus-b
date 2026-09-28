@@ -21,10 +21,15 @@ import { reportRouter } from './routes/reportRoutes.js'
 import { notificationRouter } from './routes/notificationRoutes.js'
 import { cashSessionRouter } from './routes/cashSessionRoutes.js'
 import { ApiResponse } from './utils/response.js'
+import { isAllowedOrigin } from './config/origins.js'
 
 export const app = express()
 
-app.use(cors({ origin: process.env.FRONTEND_URL?.split(',') || 'http://localhost:5173' }))
+app.use((req, res, next) => {
+  if (!isAllowedOrigin(req.get('origin'))) return ApiResponse.forbidden(res, 'Bu frontend manzilidan so‘rov qabul qilinmaydi')
+  return next()
+})
+app.use(cors({ origin: (origin, callback) => callback(null, isAllowedOrigin(origin)) }))
 app.use(express.json({ limit: '1mb' }))
 
 app.get('/api/health', (_req, res) => ApiResponse.ok(res, { status: 'ok' }))

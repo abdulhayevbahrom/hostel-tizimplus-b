@@ -189,6 +189,7 @@ class PaymentController {
   }
 
   create = async (req, res, next) => {
+    const session = await mongoose.startSession()
     try {
       const { contract: contractId, installment: installmentId, method, note = '' } = req.body
       const amount = Number(req.body.amount)
@@ -199,28 +200,34 @@ class PaymentController {
       const contract = await StudentContract.findById(contractId)
       if (!contract) return ApiResponse.notFound(res, 'Shartnoma topilmadi')
       if (contract.status === 'cancelled') return ApiResponse.badRequest(res, 'Bekor qilingan shartnoma uchun to‘lov qabul qilinmaydi')
-      const installment = await ContractInstallment.findOne({ _id: installmentId, contract: contract._id })
-      if (!installment) return ApiResponse.badRequest(res, 'Tanlangan to‘lov davri topilmadi')
-      const balance = Math.max(0, installment.amount - installment.paidAmount)
-      if (amount > balance) return ApiResponse.badRequest(res, `Maksimal to‘lov: ${balance.toLocaleString('uz-UZ')} so‘m`)
-      installment.paidAmount += amount; installment.status = installment.paidAmount >= installment.amount ? 'paid' : 'partial'; await installment.save()
       const fundHolder = req.employee.role === 'cashier'
         ? (method === 'cash' ? 'cashier' : method === 'bank' ? 'organization' : req.body.fundHolder)
         : 'organization'
       if (req.employee.role === 'cashier' && !['cash', 'bank'].includes(method) && !['cashier', 'organization'].includes(fundHolder)) return ApiResponse.badRequest(res, 'Pul tushadigan hisobni tanlang')
+      let payment
       let cashSession = null
-      if (req.employee.role === 'cashier' && fundHolder === 'cashier') {
-        cashSession = await CashSession.findOneAndUpdate(
-          { cashier: req.employee._id, status: 'open' },
-          { $setOnInsert: { cashier: req.employee._id, status: 'open' } },
-          { new: true, upsert: true, setDefaultsOnInsert: true },
-        )
-      }
-      const payment = await Payment.create({ student: contract.student, contract: contract._id, amount, method, fundHolder, note, receivedBy: req.employee._id, cashSession: cashSession?._id || null, allocations: [{ installment: installment._id, amount }], auditHistory: [{ action: 'created', performedBy: req.employee._id, after: { amount, method, note } }] })
+      await session.withTransaction(async () => {
+        const installment = await ContractInstallment.findOne({ _id: installmentId, contract: contract._id }).session(session)
+        if (!installment) throw Object.assign(new Error('Tanlangan to‘lov davri topilmadi'), { paymentValidation: true })
+        const balance = Math.max(0, installment.amount - installment.paidAmount)
+        if (amount > balance) throw Object.assign(new Error(`Maksimal to‘lov: ${balance.toLocaleString('uz-UZ')} so‘m`), { paymentValidation: true })
+        if (req.employee.role === 'cashier' && fundHolder === 'cashier') {
+          cashSession = await CashSession.findOneAndUpdate(
+            { cashier: req.employee._id, status: 'open' },
+            { $setOnInsert: { cashier: req.employee._id, status: 'open' } },
+            { new: true, upsert: true, setDefaultsOnInsert: true, session },
+          )
+        }
+        installment.paidAmount += amount
+        installment.status = installment.paidAmount >= installment.amount ? 'paid' : 'partial'
+        await installment.save({ session })
+        ;[payment] = await Payment.create([{ student: contract.student, contract: contract._id, amount, method, fundHolder, note, receivedBy: req.employee._id, cashSession: cashSession?._id || null, allocations: [{ installment: installment._id, amount }], auditHistory: [{ action: 'created', performedBy: req.employee._id, after: { amount, method, note } }] }], { session })
+      })
       await payment.populate(paymentPopulate); this.emit(req, 'created', payment)
       if (cashSession) req.app.get('io')?.emit('cash-sessions:changed', { action: 'payment-created', cashierId: req.employee.id })
       return ApiResponse.created(res, { payment }, 'To‘lov muvaffaqiyatli qabul qilindi')
-    } catch (error) { return next(error) }
+    } catch (error) { return error.paymentValidation ? ApiResponse.badRequest(res, error.message) : next(error) }
+    finally { await session.endSession() }
   }
 
   update = async (req, res, next) => {
