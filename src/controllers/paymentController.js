@@ -70,9 +70,22 @@ class PaymentController {
       const periodInstallments = period ? await ContractInstallment.find({ periodKey: period, contract: { $in: financialContractIds } }).select('_id student amount paidAmount dueDate').lean() : []
       if (period) filter['allocations.installment'] = { $in: periodInstallments.map((item) => item._id) }
       filter.contract = { $in: financialContractIds }
-      let payments = await Payment.find(filter).populate(paymentPopulate).sort({ createdAt: -1 })
       const needle = String(search).trim().toLowerCase()
-      if (needle) payments = payments.filter((item) => `${item.student?.fullName || ''} ${item.student?.phone || ''} ${item.contract?.contractNumber || ''}`.toLowerCase().includes(needle))
+      if (needle) {
+        const escapedNeedle = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        const pattern = new RegExp(escapedNeedle, 'i')
+        const [matchingStudentIds, matchingContractIds] = await Promise.all([
+          Student.distinct('_id', { _id: { $in: financialStudentIds }, $or: [{ fullName: pattern }, { phone: pattern }] }),
+          StudentContract.distinct('_id', { _id: { $in: financialContractIds }, contractNumber: pattern }),
+        ])
+        filter.$or = [{ student: { $in: matchingStudentIds } }, { contract: { $in: matchingContractIds } }]
+      }
+      const limit = 30
+      const requestedPage = Math.max(1, Number.parseInt(req.query.page, 10) || 1)
+      const total = await Payment.countDocuments(filter)
+      const totalPages = Math.max(1, Math.ceil(total / limit))
+      const page = Math.min(requestedPage, totalPages)
+      const payments = await Payment.find(filter).populate(paymentPopulate).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit)
       const reportInstallments = period ? periodInstallments : await ContractInstallment.find({ contract: { $in: financialContractIds } }).select('student amount paidAmount periodKey dueDate').lean()
       const validStudentIds = new Set(financialStudentIds.map((id) => id.toString()))
       const studentInstallments = reportInstallments.filter((item) => validStudentIds.has(item.student.toString()))
@@ -93,7 +106,7 @@ class PaymentController {
       // installments that are still waiting.
       const debt = isFuturePeriod ? 0 : studentInstallments.reduce((sum, item) => sum + Math.max(0, item.amount - item.paidAmount), 0)
       const waitingStudentIds = new Set(waitingInstallments.filter((item) => item.paidAmount < item.amount).map((item) => item.student.toString()))
-      return ApiResponse.ok(res, { payments, summary: { billed, paid, debt, paidStudents: paidStudents.size, unpaidStudents: Math.max(0, allStudents.size - paidStudents.size), waitingStudents: waitingStudentIds.size, studentCount: allStudents.size, count: payments.length, period, isFuturePeriod } })
+      return ApiResponse.ok(res, { payments, summary: { billed, paid, debt, paidStudents: paidStudents.size, unpaidStudents: Math.max(0, allStudents.size - paidStudents.size), waitingStudents: waitingStudentIds.size, studentCount: allStudents.size, count: total, period, isFuturePeriod }, pagination: { page, limit, total, totalPages } })
     } catch (error) { return next(error) }
   }
 

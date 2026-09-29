@@ -19,6 +19,10 @@ const studentContractSchema = new mongoose.Schema(
   { timestamps: true },
 )
 
+studentContractSchema.index({ status: 1, startDate: 1, endDate: 1 })
+studentContractSchema.index({ student: 1, status: 1 })
+studentContractSchema.index({ room: 1, status: 1 })
+
 studentContractSchema.set('toJSON', {
   transform(_document, result) {
     result.id = result._id.toString()

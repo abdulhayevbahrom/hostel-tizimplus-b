@@ -227,19 +227,79 @@ class StudentContractController {
         ...(filter.room ? { room: filter.room } : {}),
       };
       const validStudentIds = await Student.distinct("_id");
-      summaryFilter.student = summaryFilter.student
-        ? { $in: summaryFilter.student.$in.filter((id) => validStudentIds.some((validId) => validId.equals(id))) }
-        : { $in: validStudentIds };
-      const summaryContracts = await StudentContract.find(summaryFilter).select("_id status").lean();
-      const currentMonthRows = await ContractInstallment.aggregate([
-        {
-          $match: {
-            periodKey: currentPeriod,
-            contract: { $in: summaryContracts.map((contract) => contract._id) },
-            student: { $in: validStudentIds },
-          },
-        },
-        { $group: { _id: "$contract", amount: { $sum: "$amount" } } },
+      const validStudentIdSet = new Set(validStudentIds.map(String));
+      const scopedStudentIds = summaryFilter.student
+        ? summaryFilter.student.$in.filter((id) => validStudentIdSet.has(String(id)))
+        : validStudentIds;
+      summaryFilter.student = { $in: scopedStudentIds };
+      filter.student = { $in: scopedStudentIds };
+
+      const search = String(req.query.search || "").trim();
+      if (search) {
+        const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const pattern = new RegExp(escapedSearch, "i");
+        const [matchingStudentIds, matchingRoomIds] = await Promise.all([
+          Student.distinct("_id", { _id: { $in: scopedStudentIds }, $or: [{ fullName: pattern }, { phone: pattern }] }),
+          Room.distinct("_id", { $or: [{ block: pattern }, { roomNumber: pattern }] }),
+        ]);
+        filter.$or = [
+          { contractNumber: pattern },
+          { student: { $in: matchingStudentIds } },
+          { room: { $in: matchingRoomIds } },
+        ];
+      }
+
+      const limit = 25;
+      const requestedPage = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+      const warningLimit = new Date(today);
+      warningLimit.setDate(warningLimit.getDate() + 3);
+      let [summaryContracts, total, pageRows] = await Promise.all([
+        StudentContract.find(summaryFilter).select("_id status").lean(),
+        StudentContract.countDocuments(filter),
+        StudentContract.aggregate([
+          { $match: filter },
+          { $addFields: {
+            warningRank: { $cond: [{ $lt: ["$endDate", warningLimit] }, 0, 1] },
+            warningEndDate: { $cond: [{ $lt: ["$endDate", warningLimit] }, "$endDate", null] },
+          } },
+          { $sort: { warningRank: 1, warningEndDate: 1, createdAt: -1 } },
+          { $skip: (requestedPage - 1) * limit },
+          { $limit: limit },
+          { $project: { _id: 1 } },
+        ]),
+      ]);
+      const totalPages = Math.max(1, Math.ceil(total / limit));
+      const page = Math.min(requestedPage, totalPages);
+      if (page !== requestedPage) {
+        pageRows = await StudentContract.aggregate([
+          { $match: filter },
+          { $addFields: {
+            warningRank: { $cond: [{ $lt: ["$endDate", warningLimit] }, 0, 1] },
+            warningEndDate: { $cond: [{ $lt: ["$endDate", warningLimit] }, "$endDate", null] },
+          } },
+          { $sort: { warningRank: 1, warningEndDate: 1, createdAt: -1 } },
+          { $skip: (page - 1) * limit },
+          { $limit: limit },
+          { $project: { _id: 1 } },
+        ]);
+      }
+      const summaryContractIds = summaryContracts.map((contract) => contract._id);
+      const cancelledIds = summaryContracts.filter((contract) => contract.status === 'cancelled').map((contract) => contract._id);
+      const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+      const monthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+      const pageIds = pageRows.map((row) => row._id);
+      const [currentMonthRows, cancelledPaidRows, pageContracts] = await Promise.all([
+        ContractInstallment.aggregate([
+          { $match: { periodKey: currentPeriod, contract: { $in: summaryContractIds }, student: { $in: validStudentIds } } },
+          { $group: { _id: "$contract", amount: { $sum: "$amount" } } },
+        ]),
+        cancelledIds.length ? Payment.aggregate([
+          { $match: { contract: { $in: cancelledIds }, student: { $in: validStudentIds }, status: 'active', cancelledAt: null, createdAt: { $gte: monthStart, $lt: monthEnd } } },
+          { $group: { _id: null, amount: { $sum: '$amount' } } },
+        ]) : [],
+        pageIds.length ? StudentContract.find({ _id: { $in: pageIds } })
+          .populate({ path: "student", select: "fullName phone parentPhone photo university faculty course gender educationType hasTaxContract taxContractType", populate: [{ path: "university", select: "name shortName" }, { path: "faculty", select: "name" }] })
+          .populate("room", "roomNumber block floor") : [],
       ]);
       const summary = summaryContracts.reduce((result, contract) => {
         result.total += 1;
@@ -254,37 +314,9 @@ class StudentContractController {
           summary.amountByStatus[status] += row.amount;
         }
       }
-      const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
-      const monthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 1);
-      const cancelledIds = summaryContracts.filter((contract) => contract.status === 'cancelled').map((contract) => contract._id);
-      const cancelledPaidRows = await Payment.aggregate([
-        { $match: { contract: { $in: cancelledIds }, student: { $in: validStudentIds }, status: 'active', cancelledAt: null, createdAt: { $gte: monthStart, $lt: monthEnd } } },
-        { $group: { _id: null, amount: { $sum: '$amount' } } },
-      ]);
       summary.cancelledPaidAmount = cancelledPaidRows[0]?.amount || 0;
-      const contracts = await StudentContract.find(filter)
-        .populate({ path: "student", select: "fullName phone parentPhone photo university faculty course gender educationType hasTaxContract taxContractType", populate: [{ path: "university", select: "name shortName" }, { path: "faculty", select: "name" }] })
-        .populate("room", "roomNumber block floor")
-        .sort({ createdAt: -1 });
-      const search = String(req.query.search || "").trim().toLowerCase();
-      let rows = contracts.filter((contract) => contract.student && contract.room);
-      if (search) rows = rows.filter((contract) => `${contract.student.fullName} ${contract.student.phone} ${contract.contractNumber} ${contract.room.block} ${contract.room.roomNumber}`.toLowerCase().includes(search));
-      const warningLimit = new Date(today);
-      warningLimit.setDate(warningLimit.getDate() + 3);
-      rows.sort((first, second) => {
-        const firstEnd = new Date(first.endDate).getTime();
-        const secondEnd = new Date(second.endDate).getTime();
-        const firstWarning = firstEnd < warningLimit.getTime();
-        const secondWarning = secondEnd < warningLimit.getTime();
-        if (firstWarning !== secondWarning) return firstWarning ? -1 : 1;
-        if (firstWarning && firstEnd !== secondEnd) return firstEnd - secondEnd;
-        return new Date(second.createdAt).getTime() - new Date(first.createdAt).getTime();
-      });
-      const total = rows.length;
-      const limit = 25;
-      const totalPages = Math.max(1, Math.ceil(total / limit));
-      const page = Math.min(Math.max(1, Number.parseInt(req.query.page, 10) || 1), totalPages);
-      rows = rows.slice((page - 1) * limit, page * limit);
+      const contractsById = new Map(pageContracts.filter((contract) => contract.student && contract.room).map((contract) => [contract.id, contract]));
+      const rows = pageIds.map((id) => contractsById.get(String(id))).filter(Boolean);
       return ApiResponse.ok(res, { contracts: rows, summary, pagination: { page, limit, total, totalPages } });
     } catch (error) {
       return next(error);

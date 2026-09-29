@@ -16,6 +16,7 @@ const contractInstallmentSchema = new mongoose.Schema(
 
 contractInstallmentSchema.index({ contract: 1, periodIndex: 1 }, { unique: true })
 contractInstallmentSchema.index({ periodKey: 1, status: 1 })
+contractInstallmentSchema.index({ periodKey: 1, contract: 1 })
 
 contractInstallmentSchema.set('toJSON', {
   transform(_document, result) {
