@@ -19,6 +19,11 @@ export function ownerOnly(req, res, next) {
   return next()
 }
 
+export function deadlineEditorOnly(req, res, next) {
+  if (!['owner', 'admin', 'cashier'].includes(req.employee?.role)) return ApiResponse.forbidden(res, 'To‘lov muddatini faqat owner yoki kassir belgilashi mumkin')
+  return next()
+}
+
 export function strictOwnerOnly(req, res, next) {
   if (req.employee?.role !== 'owner') return ApiResponse.forbidden(res, 'Bu amal faqat owner uchun ruxsat etilgan')
   return next()
