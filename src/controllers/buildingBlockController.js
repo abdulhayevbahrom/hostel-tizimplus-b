@@ -16,6 +16,7 @@ class BuildingBlockController {
     try {
       const blocks = await BuildingBlock.aggregate([
         { $lookup: { from: 'rooms', localField: 'name', foreignField: 'block', as: 'rooms' } },
+        { $addFields: { rooms: { $filter: { input: '$rooms', as: 'room', cond: { $ne: ['$$room.isDeleted', true] } } } } },
         { $addFields: { roomCount: { $size: '$rooms' }, id: { $toString: '$_id' } } },
         { $project: { _id: 0, __v: 0, rooms: 0 } },
         { $sort: { name: 1 } },
@@ -53,9 +54,10 @@ class BuildingBlockController {
       const block = await BuildingBlock.findById(req.params.id)
       if (!block) return ApiResponse.notFound(res, 'Bino yoki blok topilmadi')
       if (await Room.exists({ block: block.name })) return ApiResponse.conflict(res, 'Bu blokka xonalar biriktirilgan. Avval xonalarni boshqa blokka o‘tkazing')
-      await block.deleteOne()
+      block.set({ isDeleted: true, deletedAt: new Date(), deletedBy: req.employee._id })
+      await block.save()
       this.emitChange(req, 'deleted', block)
-      return ApiResponse.ok(res, { blockId: block.id }, 'Bino yoki blok o‘chirildi')
+      return ApiResponse.ok(res, { block }, 'Bino yoki blok o‘chirildi')
     } catch (error) { return next(error) }
   }
 }

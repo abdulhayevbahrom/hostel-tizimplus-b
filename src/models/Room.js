@@ -1,4 +1,5 @@
 import mongoose from 'mongoose'
+import { softDeletePlugin } from './plugins/softDelete.js'
 
 const roomSchema = new mongoose.Schema(
   {
@@ -19,6 +20,7 @@ const roomSchema = new mongoose.Schema(
 )
 
 roomSchema.index({ block: 1, floor: 1, roomNumber: 1 }, { unique: true })
+roomSchema.plugin(softDeletePlugin)
 
 roomSchema.set('toJSON', {
   transform(_document, result) {

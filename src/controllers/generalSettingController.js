@@ -16,6 +16,8 @@ class GeneralSettingController {
 
   update = async (req, res, next) => {
     try {
+      const depositAmount = Number(req.body.depositAmount)
+      if (!Number.isFinite(depositAmount) || depositAmount < 0) return ApiResponse.badRequest(res, 'Deposit summasini to‘g‘ri kiriting')
       const current = await GeneralSetting.findOne({ key: 'general' })
       if (current?.logo && req.file && !req.body.removeLogo) return ApiResponse.badRequest(res, 'Avval mavjud logoni o‘chiring, keyin yangi logo yuklang')
       const uploaded = req.file ? (await uploadImages([req.file]))[0] : null
@@ -27,6 +29,7 @@ class GeneralSettingController {
           organizationPhone: String(req.body.organizationPhone || '').replace(/\D/g, '').replace(/^998(?=\d{9}$)/, ''),
           organizationAddress: String(req.body.organizationAddress || '').trim(),
           receiptThankYou: String(req.body.receiptThankYou || '').trim(),
+          depositAmount,
           logo,
         },
         { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true },

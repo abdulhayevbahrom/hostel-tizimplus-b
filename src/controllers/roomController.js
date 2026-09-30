@@ -65,7 +65,7 @@ class RoomController {
       const occupied = await StudentContract.aggregate([
         { $match: { status: 'active', startDate: { $lt: period.end }, endDate: { $gte: period.start } } },
         { $lookup: { from: 'students', localField: 'student', foreignField: '_id', as: 'studentDocument' } },
-        { $match: { 'studentDocument.0': { $exists: true } } },
+        { $match: { 'studentDocument.0': { $exists: true }, 'studentDocument.0.isDeleted': { $ne: true } } },
         { $group: { _id: '$room', count: { $sum: 1 } } },
       ])
       const occupiedByRoom = new Map(occupied.map((item) => [item._id.toString(), item.count]))
@@ -175,9 +175,10 @@ class RoomController {
       if (!mongoose.isValidObjectId(req.params.id)) return ApiResponse.notFound(res, 'Xona topilmadi')
       const room = await Room.findById(req.params.id)
       if (!room) return ApiResponse.notFound(res, 'Xona topilmadi')
-      await room.deleteOne()
+      room.set({ isDeleted: true, deletedAt: new Date(), deletedBy: req.employee._id })
+      await room.save()
       this.emitChange(req, 'deleted', room)
-      return ApiResponse.ok(res, { roomId: room.id }, 'Xona o‘chirildi')
+      return ApiResponse.ok(res, { room }, 'Xona o‘chirildi')
     } catch (error) { return next(error) }
   }
 }

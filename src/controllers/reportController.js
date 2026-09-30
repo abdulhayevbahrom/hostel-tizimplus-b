@@ -8,6 +8,7 @@ import { SalaryPayment } from '../models/SalaryPayment.js'
 import { Student } from '../models/Student.js'
 import { StudentContract } from '../models/StudentContract.js'
 import { ApiResponse } from '../utils/response.js'
+import { unwindPaymentParts } from '../utils/paymentParts.js'
 
 const MONTH_NAMES = ['Yanvar', 'Fevral', 'Mart', 'Aprel', 'May', 'Iyun', 'Iyul', 'Avgust', 'Sentabr', 'Oktabr', 'Noyabr', 'Dekabr']
 
@@ -38,14 +39,14 @@ class ReportController {
       const start = new Date(year, month - 1, 1)
       const end = new Date(year, month, 1)
       const dateMatch = { $gte: start, $lt: end }
-      const financialContractIds = await StudentContract.distinct('_id', { status: { $ne: 'cancelled' } })
-      const paymentMatch = { contract: { $in: financialContractIds }, status: { $ne: 'cancelled' }, cancelledAt: null, createdAt: dateMatch }
+      const [financialContractIds, validStudentIds] = await Promise.all([StudentContract.distinct('_id', { status: { $ne: 'cancelled' } }), Student.distinct('_id')])
+      const paymentMatch = { $or: [{ contract: { $in: financialContractIds } }, { paymentPurpose: 'deposit', student: { $in: validStudentIds } }], status: { $ne: 'cancelled' }, cancelledAt: null, createdAt: dateMatch }
 
       const [incomeRows, expenseRows, salaryRows, methods, categories, details] = await Promise.all([
         aggregateByDay(Payment, paymentMatch, 'createdAt'),
         aggregateByDay(Expense, { spentAt: dateMatch }, 'spentAt'),
         SalaryPayment.aggregate([{ $match: { period } }, { $group: { _id: { $dayOfMonth: { date: '$createdAt', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' }, count: { $sum: 1 } } }]),
-        Payment.aggregate([{ $match: paymentMatch }, { $group: { _id: '$method', amount: { $sum: '$amount' }, count: { $sum: 1 } } }, { $sort: { amount: -1 } }]),
+        Payment.aggregate([{ $match: paymentMatch }, ...unwindPaymentParts, { $group: { _id: '$_effectivePaymentParts.method', amount: { $sum: '$_effectivePaymentParts.amount' }, payments: { $addToSet: '$_id' } } }, { $project: { amount: 1, count: { $size: '$payments' } } }, { $sort: { amount: -1 } }]),
         Expense.aggregate([{ $match: { spentAt: dateMatch } }, { $group: { _id: '$category', amount: { $sum: '$amount' }, count: { $sum: 1 } } }, { $sort: { amount: -1 } }]),
         this.details({ dateMatch, period }),
       ])
@@ -74,14 +75,14 @@ class ReportController {
       const end = new Date(year + 1, 0, 1)
       const dateMatch = { $gte: start, $lt: end }
       const periodMatch = { $gte: `${year}-01`, $lte: `${year}-12` }
-      const financialContractIds = await StudentContract.distinct('_id', { status: { $ne: 'cancelled' } })
-      const paymentMatch = { contract: { $in: financialContractIds }, status: { $ne: 'cancelled' }, cancelledAt: null, createdAt: dateMatch }
+      const [financialContractIds, validStudentIds] = await Promise.all([StudentContract.distinct('_id', { status: { $ne: 'cancelled' } }), Student.distinct('_id')])
+      const paymentMatch = { $or: [{ contract: { $in: financialContractIds } }, { paymentPurpose: 'deposit', student: { $in: validStudentIds } }], status: { $ne: 'cancelled' }, cancelledAt: null, createdAt: dateMatch }
 
       const [incomeRows, expenseRows, salaryRows, methods, categories, details] = await Promise.all([
         aggregateByMonth(Payment, paymentMatch, 'createdAt'),
         aggregateByMonth(Expense, { spentAt: dateMatch }, 'spentAt'),
         SalaryPayment.aggregate([{ $match: { period: periodMatch } }, { $group: { _id: { $toInt: { $substrBytes: ['$period', 5, 2] } }, amount: { $sum: '$amount' }, count: { $sum: 1 } } }, { $sort: { _id: 1 } }]),
-        Payment.aggregate([{ $match: paymentMatch }, { $group: { _id: '$method', amount: { $sum: '$amount' }, count: { $sum: 1 } } }, { $sort: { amount: -1 } }]),
+        Payment.aggregate([{ $match: paymentMatch }, ...unwindPaymentParts, { $group: { _id: '$_effectivePaymentParts.method', amount: { $sum: '$_effectivePaymentParts.amount' }, payments: { $addToSet: '$_id' } } }, { $project: { amount: 1, count: { $size: '$payments' } } }, { $sort: { amount: -1 } }]),
         Expense.aggregate([{ $match: { spentAt: dateMatch } }, { $group: { _id: '$category', amount: { $sum: '$amount' }, count: { $sum: 1 } } }, { $sort: { amount: -1 } }]),
         this.details({ dateMatch, periodMatch }),
       ])

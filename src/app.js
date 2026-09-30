@@ -22,8 +22,12 @@ import { notificationRouter } from './routes/notificationRoutes.js'
 import { cashSessionRouter } from './routes/cashSessionRoutes.js'
 import { ApiResponse } from './utils/response.js'
 import { isAllowedOrigin } from './config/origins.js'
+import { identifyEmployee } from './middleware/auth.js'
+import { auditMutation } from './middleware/audit.js'
+import { auditLogRouter } from './routes/auditLogRoutes.js'
 
 export const app = express()
+app.set('trust proxy', 1)
 
 app.use((req, res, next) => {
   if (!isAllowedOrigin(req.get('origin'))) return ApiResponse.forbidden(res, 'Bu frontend manzilidan so‘rov qabul qilinmaydi')
@@ -31,6 +35,8 @@ app.use((req, res, next) => {
 })
 app.use(cors({ origin: (origin, callback) => callback(null, isAllowedOrigin(origin)) }))
 app.use(express.json({ limit: '1mb' }))
+app.use('/api', identifyEmployee)
+app.use(auditMutation)
 
 app.get('/api/health', (_req, res) => ApiResponse.ok(res, { status: 'ok' }))
 app.use('/api/auth', authRouter)
@@ -52,6 +58,7 @@ app.use('/api/dashboard', dashboardRouter)
 app.use('/api/reports', reportRouter)
 app.use('/api/notifications', notificationRouter)
 app.use('/api/cash-sessions', cashSessionRouter)
+app.use('/api/audit-logs', auditLogRouter)
 
 app.use((_req, res) => ApiResponse.notFound(res, 'API manzili topilmadi'))
 app.use((error, _req, res, _next) => {

@@ -1,4 +1,5 @@
 import mongoose from 'mongoose'
+import { softDeletePlugin } from './plugins/softDelete.js'
 
 const salaryPaymentSchema = new mongoose.Schema(
   {
@@ -13,6 +14,7 @@ const salaryPaymentSchema = new mongoose.Schema(
 )
 
 salaryPaymentSchema.index({ employee: 1, period: 1, createdAt: -1 })
+salaryPaymentSchema.plugin(softDeletePlugin)
 salaryPaymentSchema.set('toJSON', {
   transform(_document, result) {
     result.id = result._id.toString()

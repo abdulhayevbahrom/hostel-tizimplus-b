@@ -1,4 +1,5 @@
 import mongoose from 'mongoose'
+import { softDeletePlugin } from './plugins/softDelete.js'
 
 const fineSchema = new mongoose.Schema(
   {
@@ -13,6 +14,7 @@ const fineSchema = new mongoose.Schema(
 )
 
 fineSchema.index({ student: 1, createdAt: -1 })
+fineSchema.plugin(softDeletePlugin)
 fineSchema.set('toJSON', {
   transform(_document, result) {
     result.id = result._id.toString()

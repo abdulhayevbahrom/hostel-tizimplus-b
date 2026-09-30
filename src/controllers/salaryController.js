@@ -97,10 +97,12 @@ class SalaryController {
   remove = async (req, res, next) => {
     try {
       if (!mongoose.isValidObjectId(req.params.id)) return ApiResponse.notFound(res, 'To‘lov topilmadi')
-      const payment = await SalaryPayment.findByIdAndDelete(req.params.id)
+      const payment = await SalaryPayment.findById(req.params.id)
       if (!payment) return ApiResponse.notFound(res, 'To‘lov topilmadi')
+      payment.set({ isDeleted: true, deletedAt: new Date(), deletedBy: req.employee._id })
+      await payment.save()
       this.emitChange(req, 'deleted', payment)
-      return ApiResponse.ok(res, { paymentId: payment.id }, 'Oylik to‘lovi o‘chirildi')
+      return ApiResponse.ok(res, { payment }, 'Oylik to‘lovi o‘chirildi')
     } catch (error) { return next(error) }
   }
 }

@@ -1,4 +1,5 @@
 import mongoose from 'mongoose'
+import { softDeletePlugin } from './plugins/softDelete.js'
 
 const universitySchema = new mongoose.Schema(
   {
@@ -7,6 +8,7 @@ const universitySchema = new mongoose.Schema(
   },
   { timestamps: true },
 )
+universitySchema.plugin(softDeletePlugin)
 
 universitySchema.set('toJSON', {
   transform(_document, result) {

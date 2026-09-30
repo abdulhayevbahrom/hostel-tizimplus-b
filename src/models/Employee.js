@@ -1,4 +1,5 @@
 import mongoose from 'mongoose'
+import { softDeletePlugin } from './plugins/softDelete.js'
 
 const employeeSchema = new mongoose.Schema(
   {
@@ -48,5 +49,6 @@ employeeSchema.set('toJSON', {
 employeeSchema.virtual('fullName').get(function fullName() {
   return `${this.firstname} ${this.lastname}`.trim()
 })
+employeeSchema.plugin(softDeletePlugin)
 
 export const Employee = mongoose.model('Employee', employeeSchema)

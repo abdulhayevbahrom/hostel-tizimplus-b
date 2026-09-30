@@ -10,6 +10,7 @@ import { SalaryPayment } from '../models/SalaryPayment.js'
 import { Student } from '../models/Student.js'
 import { StudentContract } from '../models/StudentContract.js'
 import { ApiResponse } from '../utils/response.js'
+import { unwindPaymentParts } from '../utils/paymentParts.js'
 
 const localKeys = () => {
   const now = new Date()
@@ -48,7 +49,7 @@ class DashboardController {
       const validStudentFilter = { student: { $in: validStudentIds } }
       const activeContractFilter = { student: { $in: validStudentIds }, status: { $in: ['active', 'completed'] }, startDate: { $lte: selectedDayEnd }, endDate: { $gte: dayStart } }
       const financialContractIds = await StudentContract.distinct('_id', { student: { $in: validStudentIds }, status: { $ne: 'cancelled' } })
-      const financialPaymentFilter = { contract: { $in: financialContractIds }, status: { $ne: 'cancelled' }, cancelledAt: null }
+      const financialPaymentFilter = { $or: [{ contract: { $in: financialContractIds } }, { paymentPurpose: 'deposit', student: { $in: validStudentIds } }], status: { $ne: 'cancelled' }, cancelledAt: null }
       const [
         rooms,
         activeContracts,
@@ -100,12 +101,12 @@ class DashboardController {
         sumField(Payment, { ...financialPaymentFilter, createdAt: { $gte: dayStart, $lt: dayEnd } }),
         sumField(FinePayment, { ...validStudentFilter, createdAt: { $gte: dayStart, $lt: dayEnd } }),
         sumField(Expense, { createdAt: { $gte: dayStart, $lt: dayEnd } }),
-        Payment.aggregate([{ $match: { ...financialPaymentFilter, createdAt: { $gte: monthStart, $lt: monthEnd } } }, { $group: { _id: '$method', amount: { $sum: '$amount' }, count: { $sum: 1 } } }]),
+        Payment.aggregate([{ $match: { ...financialPaymentFilter, createdAt: { $gte: monthStart, $lt: monthEnd } } }, ...unwindPaymentParts, { $group: { _id: '$_effectivePaymentParts.method', amount: { $sum: '$_effectivePaymentParts.amount' }, payments: { $addToSet: '$_id' } } }, { $project: { amount: 1, count: { $size: '$payments' } } }]),
         FinePayment.aggregate([{ $match: { ...validStudentFilter, createdAt: { $gte: monthStart, $lt: monthEnd } } }, { $group: { _id: '$method', amount: { $sum: '$amount' }, count: { $sum: 1 } } }]),
         Payment.aggregate([{ $match: { ...financialPaymentFilter, createdAt: { $gte: monthStart, $lt: monthEnd } } }, { $group: { _id: { $dayOfMonth: { date: '$createdAt', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' } } }]),
         FinePayment.aggregate([{ $match: { ...validStudentFilter, createdAt: { $gte: monthStart, $lt: monthEnd } } }, { $group: { _id: { $dayOfMonth: { date: '$createdAt', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' } } }]),
         Expense.aggregate([{ $match: { createdAt: { $gte: monthStart, $lt: monthEnd } } }, { $group: { _id: { $dayOfMonth: { date: '$createdAt', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' } } }]),
-        Payment.aggregate([{ $match: { ...financialPaymentFilter, createdAt: { $gte: dayStart, $lt: dayEnd } } }, { $group: { _id: '$method', amount: { $sum: '$amount' }, count: { $sum: 1 } } }]),
+        Payment.aggregate([{ $match: { ...financialPaymentFilter, createdAt: { $gte: dayStart, $lt: dayEnd } } }, ...unwindPaymentParts, { $group: { _id: '$_effectivePaymentParts.method', amount: { $sum: '$_effectivePaymentParts.amount' }, payments: { $addToSet: '$_id' } } }, { $project: { amount: 1, count: { $size: '$payments' } } }]),
         FinePayment.aggregate([{ $match: { ...validStudentFilter, createdAt: { $gte: dayStart, $lt: dayEnd } } }, { $group: { _id: '$method', amount: { $sum: '$amount' }, count: { $sum: 1 } } }]),
       ])
 

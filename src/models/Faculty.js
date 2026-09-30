@@ -1,4 +1,5 @@
 import mongoose from 'mongoose'
+import { softDeletePlugin } from './plugins/softDelete.js'
 
 const facultySchema = new mongoose.Schema(
   {
@@ -9,6 +10,7 @@ const facultySchema = new mongoose.Schema(
 )
 
 facultySchema.index({ university: 1, name: 1 }, { unique: true })
+facultySchema.plugin(softDeletePlugin)
 facultySchema.set('toJSON', {
   transform(_document, result) {
     result.id = result._id.toString()

@@ -13,6 +13,7 @@ const generalSettingSchema = new mongoose.Schema(
     organizationAddress: { type: String, trim: true, maxlength: 300, default: '' },
     logo: { type: imageSchema, default: null },
     receiptThankYou: { type: String, trim: true, maxlength: 500, default: 'To‘lovingiz uchun rahmat!' },
+    depositAmount: { type: Number, min: 0, default: 0 },
   },
   { timestamps: true },
 )

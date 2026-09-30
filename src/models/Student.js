@@ -1,4 +1,5 @@
 import mongoose from 'mongoose'
+import { softDeletePlugin } from './plugins/softDelete.js'
 
 const photoSchema = new mongoose.Schema(
   { url: String, displayUrl: String, thumbnailUrl: String },
@@ -37,6 +38,7 @@ studentSchema.index(
   { passportSeries: 1, passportNumber: 1 },
   { unique: true, partialFilterExpression: { passportSeries: { $type: 'string' }, passportNumber: { $type: 'string' } } },
 )
+studentSchema.plugin(softDeletePlugin)
 studentSchema.set('toJSON', {
   transform(_document, result) {
     result.id = result._id.toString()

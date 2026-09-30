@@ -121,11 +121,12 @@ class FineController {
   remove = async (req, res, next) => {
     try {
       if (!mongoose.isValidObjectId(req.params.id)) return ApiResponse.notFound(res, 'Jarima topilmadi')
-      const fine = await Fine.findByIdAndDelete(req.params.id)
+      const fine = await Fine.findById(req.params.id)
       if (!fine) return ApiResponse.notFound(res, 'Jarima topilmadi')
-      await FinePayment.deleteMany({ fine: fine._id })
+      fine.set({ isDeleted: true, deletedAt: new Date(), deletedBy: req.employee._id })
+      await fine.save()
       this.emit(req, 'deleted', fine)
-      return ApiResponse.ok(res, { fineId: fine.id }, 'Jarima o‘chirildi')
+      return ApiResponse.ok(res, { fine }, 'Jarima o‘chirildi')
     } catch (error) { return next(error) }
   }
 }

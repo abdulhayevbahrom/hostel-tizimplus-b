@@ -1,4 +1,5 @@
 import mongoose from 'mongoose'
+import { softDeletePlugin } from './plugins/softDelete.js'
 
 const studentContractSchema = new mongoose.Schema(
   {
@@ -22,6 +23,7 @@ const studentContractSchema = new mongoose.Schema(
 studentContractSchema.index({ status: 1, startDate: 1, endDate: 1 })
 studentContractSchema.index({ student: 1, status: 1 })
 studentContractSchema.index({ room: 1, status: 1 })
+studentContractSchema.plugin(softDeletePlugin)
 
 studentContractSchema.set('toJSON', {
   transform(_document, result) {

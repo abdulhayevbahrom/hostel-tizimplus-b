@@ -8,6 +8,7 @@ import { normalizeStoredPhoneNumbers } from './utils/normalizePhoneNumbers.js'
 import { StudentContract } from './models/StudentContract.js'
 import { Room } from './models/Room.js'
 import { DebtorDeadline } from './models/DebtorDeadline.js'
+import { AuditLog } from './models/AuditLog.js'
 import { allowedOrigins, isAllowedOrigin } from './config/origins.js'
 
 const port = Number(process.env.PORT || 5000)
@@ -25,6 +26,7 @@ try {
   await StudentContract.syncIndexes()
   await Room.syncIndexes()
   await DebtorDeadline.syncIndexes()
+  await AuditLog.syncIndexes()
   await syncContractStatuses()
   await createContractExpiryNotification(io)
   await createDebtorDeadlineNotification(io)

@@ -3,20 +3,29 @@ import { CashSession } from '../models/CashSession.js'
 import { Notification } from '../models/Notification.js'
 import { Payment } from '../models/Payment.js'
 import { ApiResponse } from '../utils/response.js'
+import { unwindPaymentParts } from '../utils/paymentParts.js'
 
 const methods = ['cash', 'card', 'online', 'bank']
 const emptyBreakdown = () => ({ cash: 0, card: 0, online: 0, bank: 0 })
 const totalBreakdown = (breakdown) => methods.reduce((sum, method) => sum + Number(breakdown?.[method] || 0), 0)
 
 const sumPaymentsByMethod = async (match) => {
+  const { $or: holderConditions, ...paymentMatch } = match
+  const holder = holderConditions?.some((condition) => condition.fundHolder === 'cashier') ? 'cashier' : holderConditions ? 'organization' : null
   const rows = await Payment.aggregate([
-    { $match: { ...match, cancelledAt: null } },
-    { $group: { _id: '$method', amount: { $sum: '$amount' }, count: { $sum: 1 } } },
+    { $match: { ...paymentMatch, cancelledAt: null } },
+    ...unwindPaymentParts,
+    ...(holder ? [{ $match: { '_effectivePaymentParts.fundHolder': holder } }] : []),
+    { $group: { _id: '$_effectivePaymentParts.method', amount: { $sum: '$_effectivePaymentParts.amount' }, payments: { $addToSet: '$_id' } } },
+    { $project: { amount: 1, count: { $size: '$payments' }, payments: 1 } },
   ])
   const breakdown = emptyBreakdown()
-  let count = 0
-  rows.forEach((row) => { if (methods.includes(row._id)) breakdown[row._id] = row.amount; count += row.count })
-  return { breakdown, amount: totalBreakdown(breakdown), count }
+  const paymentIds = new Set()
+  rows.forEach((row) => {
+    if (methods.includes(row._id)) breakdown[row._id] = row.amount
+    row.payments?.forEach((id) => paymentIds.add(id.toString()))
+  })
+  return { breakdown, amount: totalBreakdown(breakdown), count: paymentIds.size }
 }
 
 const transferredBreakdown = async (sourceSession) => {

@@ -3,6 +3,7 @@ import { ApiResponse } from '../utils/response.js'
 import { verifyAuthToken } from '../utils/authToken.js'
 
 export async function requireAuth(req, res, next) {
+  if (req.employee) return next()
   try {
     const token = req.headers.authorization?.replace(/^Bearer\s+/i, '')
     const payload = verifyAuthToken(token)
@@ -12,6 +13,19 @@ export async function requireAuth(req, res, next) {
     req.employee = employee
     return next()
   } catch (_error) { return ApiResponse.unauthorized(res, 'Tizimga qayta kiring') }
+}
+
+export async function identifyEmployee(req, _res, next) {
+  if (req.employee) return next()
+  try {
+    const token = req.headers.authorization?.replace(/^Bearer\s+/i, '')
+    const payload = verifyAuthToken(token)
+    if (payload) {
+      const employee = await Employee.findById(payload.id)
+      if (employee?.isActive && employee.canLogin) req.employee = employee
+    }
+  } catch (_error) { /* Authentication enforcement remains route-specific. */ }
+  return next()
 }
 
 export function ownerOnly(req, res, next) {

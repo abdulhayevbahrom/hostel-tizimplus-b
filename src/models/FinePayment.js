@@ -1,4 +1,5 @@
 import mongoose from 'mongoose'
+import { softDeletePlugin } from './plugins/softDelete.js'
 
 const finePaymentSchema = new mongoose.Schema(
   {
@@ -11,6 +12,7 @@ const finePaymentSchema = new mongoose.Schema(
   },
   { timestamps: true },
 )
+finePaymentSchema.plugin(softDeletePlugin)
 
 finePaymentSchema.set('toJSON', {
   transform(_document, result) {

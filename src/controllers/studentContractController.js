@@ -63,8 +63,20 @@ class StudentContractController {
         ),
         { status: 409 },
       );
-    await ContractInstallment.deleteMany({ contract: contract._id });
-    await ContractInstallment.insertMany(buildContractInstallments(contract));
+    const desiredInstallments = buildContractInstallments(contract);
+    const existingInstallments = await ContractInstallment.find({ contract: contract._id }).setOptions({ withDeleted: true });
+    const existingByIndex = new Map(existingInstallments.map((item) => [item.periodIndex, item]));
+    await Promise.all(desiredInstallments.map(async (desired) => {
+      const existing = existingByIndex.get(desired.periodIndex);
+      if (!existing) return ContractInstallment.create(desired);
+      existing.set({ ...desired, isDeleted: false, deletedAt: null, deletedBy: null });
+      existingByIndex.delete(desired.periodIndex);
+      return existing.save();
+    }));
+    await Promise.all([...existingByIndex.values()].map((installment) => {
+      installment.set({ isDeleted: true, deletedAt: new Date() });
+      return installment.save();
+    }));
   }
 
   async extendInstallments(contract) {
@@ -183,7 +195,7 @@ class StudentContractController {
             as: "studentDocument",
           },
         },
-        { $match: { "studentDocument.0": { $exists: true } } },
+        { $match: { "studentDocument.0": { $exists: true }, "studentDocument.0.isDeleted": { $ne: true } } },
         { $count: "count" },
       ]);
       if ((occupiedRows[0]?.count || 0) >= room.capacity)
@@ -294,7 +306,7 @@ class StudentContractController {
           { $group: { _id: "$contract", amount: { $sum: "$amount" } } },
         ]),
         cancelledIds.length ? Payment.aggregate([
-          { $match: { contract: { $in: cancelledIds }, student: { $in: validStudentIds }, status: 'active', cancelledAt: null, createdAt: { $gte: monthStart, $lt: monthEnd } } },
+          { $match: { contract: { $in: cancelledIds }, student: { $in: validStudentIds }, paymentPurpose: { $ne: 'deposit' }, status: 'active', cancelledAt: null, createdAt: { $gte: monthStart, $lt: monthEnd } } },
           { $group: { _id: null, amount: { $sum: '$amount' } } },
         ]) : [],
         pageIds.length ? StudentContract.find({ _id: { $in: pageIds } })

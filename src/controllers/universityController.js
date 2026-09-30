@@ -19,6 +19,7 @@ class UniversityController {
     try {
       const universities = await University.aggregate([
         { $lookup: { from: 'faculties', localField: '_id', foreignField: 'university', as: 'faculties' } },
+        { $addFields: { faculties: { $filter: { input: '$faculties', as: 'faculty', cond: { $ne: ['$$faculty.isDeleted', true] } } } } },
         { $addFields: { facultyCount: { $size: '$faculties' }, id: { $toString: '$_id' } } },
         { $project: { _id: 0, __v: 0, faculties: 0 } },
         { $sort: { name: 1 } },
@@ -49,10 +50,12 @@ class UniversityController {
     try {
       if (!mongoose.isValidObjectId(req.params.id)) return ApiResponse.notFound(res, 'Universitet topilmadi')
       if (await Faculty.exists({ university: req.params.id })) return ApiResponse.conflict(res, 'Avval ushbu universitetga biriktirilgan fakultetlarni o‘chiring')
-      const university = await University.findByIdAndDelete(req.params.id)
+      const university = await University.findById(req.params.id)
       if (!university) return ApiResponse.notFound(res, 'Universitet topilmadi')
+      university.set({ isDeleted: true, deletedAt: new Date(), deletedBy: req.employee._id })
+      await university.save()
       this.emitChange(req, 'deleted', university)
-      return ApiResponse.ok(res, { universityId: university.id }, 'Universitet o‘chirildi')
+      return ApiResponse.ok(res, { university }, 'Universitet o‘chirildi')
     } catch (error) { return next(error) }
   }
 }

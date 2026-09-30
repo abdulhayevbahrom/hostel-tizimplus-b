@@ -138,10 +138,12 @@ class EmployeeController {
   remove = async (req, res, next) => {
     try {
       if (!mongoose.isValidObjectId(req.params.id)) return ApiResponse.notFound(res, 'Xodim topilmadi')
-      const employee = await Employee.findByIdAndDelete(req.params.id)
+      const employee = await Employee.findById(req.params.id)
       if (!employee) return ApiResponse.notFound(res, 'Xodim topilmadi')
+      employee.set({ isDeleted: true, deletedAt: new Date(), deletedBy: req.employee._id, isActive: false, canLogin: false })
+      await employee.save()
       this.emitChange(req, 'deleted', employee)
-      return ApiResponse.ok(res, { employeeId: employee.id }, 'Xodim o‘chirildi')
+      return ApiResponse.ok(res, { employee }, 'Xodim o‘chirildi')
     } catch (error) {
       return next(error)
     }

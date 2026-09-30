@@ -1,7 +1,9 @@
 import { Router } from 'express'
 import { facultyController } from '../controllers/facultyController.js'
+import { requireAuth } from '../middleware/auth.js'
 
 export const facultyRouter = Router()
+facultyRouter.use(requireAuth)
 facultyRouter.get('/', facultyController.list)
 facultyRouter.post('/', facultyController.create)
 facultyRouter.put('/:id', facultyController.update)

@@ -3,20 +3,32 @@ import { ContractInstallment } from '../models/ContractInstallment.js'
 import { Payment } from '../models/Payment.js'
 import { DebtorDeadline } from '../models/DebtorDeadline.js'
 import { StudentContract } from '../models/StudentContract.js'
+import { GeneralSetting } from '../models/GeneralSetting.js'
 import { ApiResponse } from '../utils/response.js'
+import { periodKeyInTashkent, tashkentDayEnd } from '../utils/paymentTime.js'
 
 class DebtorController {
   list = async (req, res, next) => {
     try {
       const now = new Date()
-      const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999)
-      const currentKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+      const todayEnd = tashkentDayEnd(now)
+      const currentKey = periodKeyInTashkent(now)
       const requestedPeriod = /^\d{4}-\d{2}$/.test(String(req.query.period || '')) ? String(req.query.period) : currentKey
       const isFuturePeriod = requestedPeriod > currentKey
       const search = String(req.query.search || '').trim().toLowerCase()
       const status = ['all', 'overdue', 'partial', 'unpaid'].includes(req.query.status) ? req.query.status : 'all'
+      const debtType = ['all', 'contract', 'deposit'].includes(req.query.debtType) ? req.query.debtType : 'all'
+      const effectiveFuturePeriod = isFuturePeriod && debtType !== 'deposit'
       const roomFilter = mongoose.isValidObjectId(req.query.room) ? String(req.query.room) : ''
-      const financialContractIds = await StudentContract.distinct('_id', { status: { $ne: 'cancelled' } })
+      const [financialContractIds, activeContracts, settings] = await Promise.all([
+        StudentContract.distinct('_id', { status: { $ne: 'cancelled' } }),
+        StudentContract.find({ status: 'active' }).populate({ path: 'student', select: 'fullName phone parentPhone photo university faculty course', populate: [{ path: 'university', select: 'name' }, { path: 'faculty', select: 'name' }] }).populate('room', 'roomNumber block floor'),
+        GeneralSetting.findOne({ key: 'general' }).lean(),
+      ])
+      const depositAmount = Number(settings?.depositAmount || 0)
+      const activeStudentIds = [...new Set(activeContracts.map((contract) => contract.student?.id).filter(Boolean))]
+      const depositRows = activeStudentIds.length ? await Payment.aggregate([{ $match: { student: { $in: activeStudentIds.map((id) => new mongoose.Types.ObjectId(id)) }, paymentPurpose: 'deposit', status: { $ne: 'cancelled' }, cancelledAt: null } }, { $group: { _id: '$student', paid: { $sum: '$amount' } } }]) : []
+      const depositPaidByStudent = new Map(depositRows.map((row) => [row._id.toString(), row.paid]))
       const allInstallments = await ContractInstallment.find({ periodKey: requestedPeriod, contract: { $in: financialContractIds } })
         .populate({ path: 'student', select: 'fullName phone parentPhone photo university faculty course', populate: [{ path: 'university', select: 'name' }, { path: 'faculty', select: 'name' }] })
         .populate({ path: 'contract', select: 'contractNumber status room startDate endDate paymentType', populate: { path: 'room', select: 'roomNumber block floor' } })
@@ -32,9 +44,10 @@ class DebtorController {
       const deadlines = await DebtorDeadline.find({ periodKey: requestedPeriod, student: { $in: installments.map((item) => item.student?._id).filter(Boolean) } }).populate('setBy', 'firstname lastname role')
       const deadlinesByStudent = new Map(deadlines.map((item) => [item.student.toString(), item]))
 
-      const studentIds = [...new Set(installments.map((item) => item.student?._id?.toString()).filter(Boolean))]
-      const paymentRows = await Payment.find({ student: { $in: studentIds.map((id) => new mongoose.Types.ObjectId(id)) }, contract: { $in: financialContractIds } })
-        .select('student contract amount method note allocations createdAt')
+      const depositDebtorIds = depositAmount > 0 ? activeStudentIds.filter((id) => (depositPaidByStudent.get(id) || 0) < depositAmount) : []
+      const studentIds = [...new Set([...installments.map((item) => item.student?._id?.toString()).filter(Boolean), ...depositDebtorIds])]
+      const paymentRows = await Payment.find({ student: { $in: studentIds.map((id) => new mongoose.Types.ObjectId(id)) }, $or: [{ contract: { $in: financialContractIds } }, { paymentPurpose: 'deposit' }] })
+        .select('student contract paymentPurpose amount method paymentParts fundHolder note allocations createdAt status cancelledAt')
         .populate('contract', 'contractNumber')
         .populate('allocations.installment', 'periodKey')
         .sort({ createdAt: -1 })
@@ -55,25 +68,40 @@ class DebtorController {
       for (const item of installments) {
         if (!item.student || !item.contract) continue
         const key = item.student._id.toString()
-        if (!grouped.has(key)) grouped.set(key, { student: item.student, contracts: new Map(), periods: [], totalDebt: 0, waitingAmount: 0, overdueDebt: 0, currentDebt: 0, paidTowardsDebt: 0 })
+        if (!grouped.has(key)) grouped.set(key, { student: item.student, contracts: new Map(), periods: [], contractDebt: 0, depositDebt: 0, depositPaid: 0, depositAmount, totalDebt: 0, waitingAmount: 0, overdueDebt: 0, currentDebt: 0, paidTowardsDebt: 0 })
         const debtor = grouped.get(key)
         const debt = Math.max(0, item.amount - item.paidAmount)
         debtor.periods.push({ id: item.id, contractId: item.contract.id, contractNumber: item.contract.contractNumber, periodKey: item.periodKey, dueDate: item.dueDate, amount: item.amount, paidAmount: item.paidAmount, debt, status: item.status, isUpcoming: false, room: item.contract.room })
         debtor.contracts.set(item.contract.id, item.contract)
         // Only installments whose due date has arrived are included above, so
         // upcoming payments never appear in the debtor list or its totals.
-        debtor.totalDebt += debt
+        debtor.contractDebt += debt
         debtor.paidTowardsDebt += item.paidAmount
         if (item.periodKey < currentKey) debtor.overdueDebt += debt
         else debtor.currentDebt += debt
       }
-      let debtors = [...grouped.values()].filter((item) => isFuturePeriod ? item.waitingAmount > 0 : item.totalDebt > 0).map((item) => {
+      for (const contract of activeContracts) {
+        if (!contract.student) continue
+        const key = contract.student.id
+        const depositPaid = depositPaidByStudent.get(key) || 0
+        const depositDebt = Math.max(0, depositAmount - depositPaid)
+        if (depositDebt <= 0) continue
+        if (!grouped.has(key)) grouped.set(key, { student: contract.student, contracts: new Map(), periods: [], contractDebt: 0, depositDebt: 0, depositPaid: 0, depositAmount, totalDebt: 0, waitingAmount: 0, overdueDebt: 0, currentDebt: 0, paidTowardsDebt: 0 })
+        const debtor = grouped.get(key)
+        debtor.contracts.set(contract.id, contract)
+        debtor.depositPaid = depositPaid
+        debtor.depositDebt = depositDebt
+      }
+      let debtors = [...grouped.values()].map((item) => ({ ...item, totalDebt: item.contractDebt + item.depositDebt })).filter((item) => effectiveFuturePeriod ? item.waitingAmount > 0 : item.totalDebt > 0).map((item) => {
         const paymentHistory = paymentsByStudent.get(item.student.id) || []
         const lastPayment = paymentHistory[0]
         const deadline = deadlinesByStudent.get(item.student.id)
         const allPeriods = periodsByStudent.get(item.student.id) || item.periods
-        return { ...item, contracts: [...item.contracts.values()], periods: allPeriods, debtPeriods: item.periods, periodCount: item.periods.length, oldestDueDate: item.periods[0]?.dueDate, lastPaymentAt: lastPayment?.createdAt || null, lastPaymentAmount: lastPayment?.amount || 0, paymentHistory, debtStatus: item.paidTowardsDebt > 0 ? 'partial' : 'unpaid', paymentDeadline: deadline?.deadline || null, deadlineSetBy: deadline?.setBy || null, isDeadlineReached: Boolean(deadline && new Date(deadline.deadline) <= todayEnd) }
+        const totalPaid = item.paidTowardsDebt + item.depositPaid
+        return { ...item, contracts: [...item.contracts.values()], periods: allPeriods, debtPeriods: item.periods, periodCount: item.periods.length, oldestDueDate: item.periods[0]?.dueDate, lastPaymentAt: lastPayment?.createdAt || null, lastPaymentAmount: lastPayment?.amount || 0, paymentHistory, debtStatus: totalPaid > 0 ? 'partial' : 'unpaid', paymentDeadline: deadline?.deadline || null, deadlineSetBy: deadline?.setBy || null, isDeadlineReached: Boolean(deadline && new Date(deadline.deadline) <= todayEnd) }
       }).sort((a, b) => b.totalDebt - a.totalDebt)
+      if (debtType === 'contract') debtors = debtors.filter((item) => item.contractDebt > 0)
+      if (debtType === 'deposit') debtors = debtors.filter((item) => item.depositDebt > 0)
       if (roomFilter) debtors = debtors.filter((item) => item.contracts.some((contract) => contract.room?.id === roomFilter))
       if (status !== 'all') debtors = debtors.filter((item) => status === 'overdue' ? item.overdueDebt > 0 : item.debtStatus === status)
       if (search) {
@@ -92,8 +120,8 @@ class DebtorController {
       reportInstallments.forEach((item) => { paidByStudent.set(item.student.id, (paidByStudent.get(item.student.id) || 0) + item.paidAmount) })
       const paidStudentCount = [...paidByStudent.values()].filter((amount) => amount > 0).length
       const noPaymentStudentCount = [...paidByStudent.values()].filter((amount) => amount <= 0).length
-      const summary = { debtorCount: isFuturePeriod ? 0 : debtors.length, waitingCount: isFuturePeriod ? debtors.length : 0, totalDebt: isFuturePeriod ? 0 : outstanding, waitingAmount, scheduledAmount, paidAmount, paidStudentCount, noPaymentStudentCount, overdueDebt: debtors.reduce((sum, item) => sum + item.overdueDebt, 0), partialCount: debtors.filter((item) => item.debtStatus === 'partial').length, unpaidCount: debtors.filter((item) => item.debtStatus === 'unpaid').length }
-      return ApiResponse.ok(res, { debtors: paginatedDebtors, summary, pagination: { page, limit, total, totalPages }, selectedPeriod: requestedPeriod, currentPeriod: currentKey, isFuturePeriod })
+      const summary = { debtorCount: effectiveFuturePeriod ? 0 : debtors.length, waitingCount: effectiveFuturePeriod ? debtors.length : 0, totalDebt: effectiveFuturePeriod ? 0 : outstanding, contractDebt: debtors.reduce((sum, item) => sum + item.contractDebt, 0), depositDebt: debtors.reduce((sum, item) => sum + item.depositDebt, 0), depositAmount, waitingAmount, scheduledAmount, paidAmount, paidStudentCount, noPaymentStudentCount, overdueDebt: debtors.reduce((sum, item) => sum + item.overdueDebt, 0), partialCount: debtors.filter((item) => item.debtStatus === 'partial').length, unpaidCount: debtors.filter((item) => item.debtStatus === 'unpaid').length }
+      return ApiResponse.ok(res, { debtors: paginatedDebtors, summary, pagination: { page, limit, total, totalPages }, selectedPeriod: requestedPeriod, currentPeriod: currentKey, isFuturePeriod: effectiveFuturePeriod, debtType })
     } catch (error) { return next(error) }
   }
 
@@ -102,7 +130,7 @@ class DebtorController {
       if (!mongoose.isValidObjectId(req.params.studentId)) return ApiResponse.notFound(res, 'Talaba topilmadi')
       const periodKey = String(req.body.periodKey || '')
       if (!/^\d{4}-\d{2}$/.test(periodKey)) return ApiResponse.badRequest(res, 'Qarzdorlik oyini tanlang')
-      const deadline = new Date(`${req.body.deadline}T23:59:59.999`)
+      const deadline = new Date(`${req.body.deadline}T23:59:59.999+05:00`)
       if (!/^\d{4}-\d{2}-\d{2}$/.test(String(req.body.deadline || '')) || Number.isNaN(deadline.getTime())) return ApiResponse.badRequest(res, 'Deadline sanasini kiriting')
       const financialContractIds = await StudentContract.distinct('_id', { status: { $ne: 'cancelled' } })
       const hasDebt = await ContractInstallment.exists({ student: req.params.studentId, periodKey, contract: { $in: financialContractIds }, $expr: { $lt: ['$paidAmount', '$amount'] } })

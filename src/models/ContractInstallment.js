@@ -1,4 +1,5 @@
 import mongoose from 'mongoose'
+import { softDeletePlugin } from './plugins/softDelete.js'
 
 const contractInstallmentSchema = new mongoose.Schema(
   {
@@ -17,6 +18,7 @@ const contractInstallmentSchema = new mongoose.Schema(
 contractInstallmentSchema.index({ contract: 1, periodIndex: 1 }, { unique: true })
 contractInstallmentSchema.index({ periodKey: 1, status: 1 })
 contractInstallmentSchema.index({ periodKey: 1, contract: 1 })
+contractInstallmentSchema.plugin(softDeletePlugin)
 
 contractInstallmentSchema.set('toJSON', {
   transform(_document, result) {

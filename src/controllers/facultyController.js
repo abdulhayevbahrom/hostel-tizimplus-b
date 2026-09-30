@@ -48,10 +48,12 @@ class FacultyController {
     try {
       if (!mongoose.isValidObjectId(req.params.id)) return ApiResponse.notFound(res, 'Fakultet topilmadi')
       if (await Student.exists({ faculty: req.params.id })) return ApiResponse.conflict(res, 'Bu fakultetga talabalar biriktirilgan')
-      const faculty = await Faculty.findByIdAndDelete(req.params.id)
+      const faculty = await Faculty.findById(req.params.id)
       if (!faculty) return ApiResponse.notFound(res, 'Fakultet topilmadi')
+      faculty.set({ isDeleted: true, deletedAt: new Date(), deletedBy: req.employee._id })
+      await faculty.save()
       this.emitChange(req, 'deleted', faculty)
-      return ApiResponse.ok(res, { facultyId: faculty.id }, 'Fakultet o‘chirildi')
+      return ApiResponse.ok(res, { faculty }, 'Fakultet o‘chirildi')
     } catch (error) { return next(error) }
   }
 }

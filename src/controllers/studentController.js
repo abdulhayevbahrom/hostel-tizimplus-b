@@ -267,18 +267,30 @@ class StudentController {
       if (!mongoose.isValidObjectId(req.params.id)) return ApiResponse.notFound(res, 'Talaba topilmadi')
       const student = await Student.findById(req.params.id)
       if (!student) return ApiResponse.notFound(res, 'Talaba topilmadi')
+      req.auditOldValue = student.toObject()
       const payload = this.cleanPayload(req.body)
       if (this.validateConditionalFields(payload, res)) return undefined
-      if (await this.resolveEducation(payload, req, res)) return undefined
+      const educationUnchanged = String(student.university || '') === String(payload.university || '') && String(student.faculty || '') === String(payload.faculty || '')
+      if (educationUnchanged) {
+        payload.university = student.university
+        payload.faculty = student.faculty
+      } else if (await this.resolveEducation(payload, req, res)) return undefined
       if (payload.disciplinaryStatus === 'blacklisted' && !payload.disciplinaryNote) return ApiResponse.badRequest(res, 'Qora ro‘yxat sababini kiriting')
-      const blocked = await this.findBlacklist(payload)
-      if (blocked && blocked.sourceStudent?.toString() !== student.id) return ApiResponse.conflict(res, `Bu shaxs qora ro‘yxatda: ${blocked.reason}`)
+      const identityChanged = String(student.jshr || '') !== String(payload.jshr || '')
+        || String(student.passportSeries || '') !== String(payload.passportSeries || '')
+        || String(student.passportNumber || '') !== String(payload.passportNumber || '')
+      const blacklistChanged = identityChanged
+        || student.disciplinaryStatus !== payload.disciplinaryStatus
+        || String(student.disciplinaryNote || '') !== String(payload.disciplinaryNote || '')
+      if (identityChanged) {
+        const blocked = await this.findBlacklist(payload)
+        if (blocked && blocked.sourceStudent?.toString() !== student.id) return ApiResponse.conflict(res, `Bu shaxs qora ro‘yxatda: ${blocked.reason}`)
+      }
       const uploaded = req.file ? (await uploadImages([req.file]))[0] : null
       payload.photo = req.body.removePhoto ? null : uploaded || student.photo || null
       student.set(payload)
       await student.save()
-      await this.syncBlacklist(student)
-      await student.populate([{ path: 'university', select: 'name shortName' }, { path: 'faculty', select: 'name' }])
+      if (blacklistChanged) await this.syncBlacklist(student)
       this.emitChange(req, 'updated', student)
       return ApiResponse.ok(res, { student }, 'Talaba yangilandi')
     } catch (error) { return next(error) }
@@ -287,13 +299,13 @@ class StudentController {
   remove = async (req, res, next) => {
     try {
       if (!mongoose.isValidObjectId(req.params.id)) return ApiResponse.notFound(res, 'Talaba topilmadi')
-      if (await StudentContract.exists({ student: req.params.id })) {
-        return ApiResponse.conflict(res, 'Shartnoma yoki to‘lov tarixi mavjud bo‘lgan talabani o‘chirib bo‘lmaydi')
-      }
-      const student = await Student.findByIdAndDelete(req.params.id)
+      const student = await Student.findById(req.params.id)
       if (!student) return ApiResponse.notFound(res, 'Talaba topilmadi')
+      req.auditOldValue = student.toObject()
+      student.set({ isDeleted: true, deletedAt: new Date(), deletedBy: req.employee._id })
+      await student.save()
       this.emitChange(req, 'deleted', student)
-      return ApiResponse.ok(res, { studentId: student.id }, 'Talaba o‘chirildi')
+      return ApiResponse.ok(res, { student }, 'Talaba o‘chirildi')
     } catch (error) { return next(error) }
   }
 }

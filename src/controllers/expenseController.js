@@ -82,10 +82,12 @@ class ExpenseController {
   remove = async (req, res, next) => {
     try {
       if (!mongoose.isValidObjectId(req.params.id)) return ApiResponse.notFound(res, 'Xarajat topilmadi')
-      const expense = await Expense.findByIdAndDelete(req.params.id)
+      const expense = await Expense.findById(req.params.id)
       if (!expense) return ApiResponse.notFound(res, 'Xarajat topilmadi')
+      expense.set({ isDeleted: true, deletedAt: new Date(), deletedBy: req.employee._id })
+      await expense.save()
       req.app.get('io')?.emit('expenses:changed', { action: 'deleted', expenseId: expense.id })
-      return ApiResponse.ok(res, { expenseId: expense.id }, 'Xarajat o‘chirildi')
+      return ApiResponse.ok(res, { expense }, 'Xarajat o‘chirildi')
     } catch (error) { return next(error) }
   }
 }

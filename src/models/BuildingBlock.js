@@ -1,4 +1,5 @@
 import mongoose from 'mongoose'
+import { softDeletePlugin } from './plugins/softDelete.js'
 
 const buildingBlockSchema = new mongoose.Schema(
   {
@@ -6,6 +7,7 @@ const buildingBlockSchema = new mongoose.Schema(
   },
   { timestamps: true },
 )
+buildingBlockSchema.plugin(softDeletePlugin)
 
 buildingBlockSchema.set('toJSON', {
   transform(_document, result) {

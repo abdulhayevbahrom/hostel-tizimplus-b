@@ -1,4 +1,5 @@
 import mongoose from 'mongoose'
+import { softDeletePlugin } from './plugins/softDelete.js'
 
 const expenseSchema = new mongoose.Schema(
   {
@@ -15,6 +16,7 @@ const expenseSchema = new mongoose.Schema(
 )
 
 expenseSchema.index({ spentAt: -1, createdAt: -1 })
+expenseSchema.plugin(softDeletePlugin)
 expenseSchema.set('toJSON', {
   transform(_document, result) {
     result.id = result._id.toString()
