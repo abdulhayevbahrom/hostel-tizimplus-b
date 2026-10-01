@@ -12,6 +12,7 @@ import { universityRouter } from './routes/universityRoutes.js'
 import { paymentRouter } from './routes/paymentRoutes.js'
 import { authRouter } from './routes/authRoutes.js'
 import { debtorRouter } from './routes/debtorRoutes.js'
+import { depositRouter } from './routes/depositRoutes.js'
 import { attendanceRouter } from './routes/attendanceRoutes.js'
 import { expenseRouter } from './routes/expenseRoutes.js'
 import { fineRouter } from './routes/fineRoutes.js'
@@ -50,6 +51,7 @@ app.use('/api/students', studentRouter)
 app.use('/api/student-contracts', studentContractRouter)
 app.use('/api/payments', paymentRouter)
 app.use('/api/debtors', debtorRouter)
+app.use('/api/deposits', depositRouter)
 app.use('/api/attendance', attendanceRouter)
 app.use('/api/expenses', expenseRouter)
 app.use('/api/fines', fineRouter)
