@@ -101,6 +101,7 @@ class RoomController {
         .lean()
       const installmentsByContract = new Map()
       for (const installment of contractInstallments) {
+        if (Number(installment.paidAmount || 0) <= 0) continue
         const key = installment.contract.toString()
         if (!installmentsByContract.has(key)) installmentsByContract.set(key, [])
         installmentsByContract.get(key).push({
