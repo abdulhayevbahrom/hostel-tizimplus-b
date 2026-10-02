@@ -13,7 +13,7 @@ import { buildPaymentParts, effectivePaymentParts, PAYMENT_METHODS, paymentFundH
 
 const paymentPopulate = [
   { path: 'student', select: 'fullName phone photo' },
-  { path: 'contract', select: 'contractNumber totalAmount paymentType room', populate: { path: 'room', select: 'roomNumber block' } },
+  { path: 'contract', select: 'contractNumber totalAmount paymentType room', populate: { path: 'room', select: 'roomNumber block floor' } },
   { path: 'allocations.installment', select: 'periodKey dueDate amount paidAmount status' },
   { path: 'receivedBy', select: 'firstname lastname role' },
   { path: 'cashSession', select: 'status expectedAmount closedAt' },
