@@ -211,7 +211,10 @@ class PaymentController {
   studentProfile = async (req, res, next) => {
     try {
       if (!mongoose.isValidObjectId(req.params.studentId)) return ApiResponse.notFound(res, 'Talaba topilmadi')
-      const contracts = await StudentContract.find({ student: req.params.studentId, status: { $ne: 'cancelled' } }).populate('room', 'roomNumber block').sort({ startDate: -1 }).lean()
+      // A student profile is also the archive view for former residents. Keep
+      // cancelled contracts here so their installments and payment history do
+      // not disappear after the student moves to the history tab.
+      const contracts = await StudentContract.find({ student: req.params.studentId }).populate('room', 'roomNumber block').sort({ startDate: -1 }).lean()
       const installments = await ContractInstallment.find({ contract: { $in: contracts.map((item) => item._id) } }).sort({ dueDate: 1, periodIndex: 1 }).lean()
       const payments = await Payment.find({ student: req.params.studentId, $or: [{ contract: { $in: contracts.map((contract) => contract._id) } }, { paymentPurpose: 'deposit' }] }).populate(paymentPopulate).sort({ createdAt: -1 })
       const activeContractIds = new Set(contracts.filter((contract) => contract.status === 'active').map((contract) => contract._id.toString()))
