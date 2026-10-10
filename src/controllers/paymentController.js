@@ -127,11 +127,11 @@ class PaymentController {
       const todayEnd = tashkentDayEnd(now)
       const isFuturePeriod = Boolean(period && period > currentKey)
       const waitingInstallments = studentInstallments.filter((item) => new Date(item.dueDate) > todayEnd)
-      // Keep the financial cards on the same scope: billed and paid include every
-      // installment in the selected period, so debt must be their remaining
-      // balance too. Generated due dates only distinguish future-period
-      // installments that are still waiting.
-      const debt = isFuturePeriod ? 0 : studentInstallments.reduce((sum, item) => sum + Math.max(0, item.amount - item.paidAmount), 0)
+      // "Qarzdorlik" means an unpaid balance whose payment deadline has
+      // arrived. Keep this identical to the debtors endpoint; installments due
+      // later in the selected month remain expected payments, not debt yet.
+      const dueInstallments = studentInstallments.filter((item) => new Date(item.dueDate) <= todayEnd)
+      const debt = isFuturePeriod ? 0 : dueInstallments.reduce((sum, item) => sum + Math.max(0, item.amount - item.paidAmount), 0)
       const waitingStudentIds = new Set(waitingInstallments.filter((item) => item.paidAmount < item.amount).map((item) => item.student.toString()))
       return ApiResponse.ok(res, { payments, summary: { billed, paid, debt, paidStudents: paidStudents.size, unpaidStudents: Math.max(0, allStudents.size - paidStudents.size), waitingStudents: waitingStudentIds.size, studentCount: allStudents.size, count: total, period, isFuturePeriod }, pagination: { page, limit, total, totalPages } })
     } catch (error) { return next(error) }
