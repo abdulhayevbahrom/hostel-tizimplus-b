@@ -26,6 +26,7 @@ import { isAllowedOrigin } from './config/origins.js'
 import { identifyEmployee } from './middleware/auth.js'
 import { auditMutation } from './middleware/audit.js'
 import { auditLogRouter } from './routes/auditLogRoutes.js'
+import { paymentStatisticsRouter } from './routes/paymentStatisticsRoutes.js'
 
 export const app = express()
 app.set('trust proxy', 1)
@@ -50,6 +51,7 @@ app.use('/api/settings/general', generalSettingRouter)
 app.use('/api/students', studentRouter)
 app.use('/api/student-contracts', studentContractRouter)
 app.use('/api/payments', paymentRouter)
+app.use('/api/payment-statistics', paymentStatisticsRouter)
 app.use('/api/debtors', debtorRouter)
 app.use('/api/deposits', depositRouter)
 app.use('/api/attendance', attendanceRouter)

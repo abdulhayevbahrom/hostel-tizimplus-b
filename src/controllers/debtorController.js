@@ -14,9 +14,12 @@ class DebtorController {
       const currentKey = periodKeyInTashkent(now)
       const requestedPeriod = /^\d{4}-\d{2}$/.test(String(req.query.period || '')) ? String(req.query.period) : currentKey
       const isFuturePeriod = requestedPeriod > currentKey
+      const requestedView = req.query.view === 'upcoming' ? 'upcoming' : 'debtors'
+      // Future months have no overdue rows yet, so they naturally use the
+      // upcoming view even when the client did not explicitly request it.
+      const isUpcomingView = requestedView === 'upcoming' || isFuturePeriod
       const search = String(req.query.search || '').trim().toLowerCase()
       const status = ['all', 'overdue', 'partial', 'unpaid'].includes(req.query.status) ? req.query.status : 'all'
-      const effectiveFuturePeriod = isFuturePeriod
       const roomFilter = mongoose.isValidObjectId(req.query.room) ? String(req.query.room) : ''
       const financialContractIds = await StudentContract.distinct('_id', { status: { $ne: 'cancelled' } })
       const allInstallments = await ContractInstallment.find({ periodKey: requestedPeriod, contract: { $in: financialContractIds } })
@@ -27,8 +30,8 @@ class DebtorController {
       // removed. Such rows cannot be shown in the debtor list and therefore
       // must not affect its summary either.
       const reportInstallments = allInstallments.filter((item) => item.student && item.contract)
-      const installments = reportInstallments.filter((item) => (
-        item.paidAmount < item.amount && new Date(item.dueDate) <= todayEnd
+      const installments = reportInstallments.filter((item) => item.paidAmount < item.amount && (
+        isUpcomingView ? new Date(item.dueDate) > todayEnd : new Date(item.dueDate) <= todayEnd
       ))
 
       const deadlines = await DebtorDeadline.find({ periodKey: requestedPeriod, student: { $in: installments.map((item) => item.student?._id).filter(Boolean) } }).populate('setBy', 'firstname lastname role')
@@ -62,14 +65,15 @@ class DebtorController {
         const debt = Math.max(0, item.amount - item.paidAmount)
         debtor.periods.push({ id: item.id, contractId: item.contract.id, contractNumber: item.contract.contractNumber, periodKey: item.periodKey, dueDate: item.dueDate, amount: item.amount, paidAmount: item.paidAmount, debt, status: item.status, isUpcoming: false, room: item.contract.room })
         debtor.contracts.set(item.contract.id, item.contract)
-        // Only installments whose due date has arrived are included above, so
-        // upcoming payments never appear in the debtor list or its totals.
-        debtor.contractDebt += debt
+        if (isUpcomingView) debtor.waitingAmount += debt
+        else debtor.contractDebt += debt
         debtor.paidTowardsDebt += item.paidAmount
-        if (item.periodKey < currentKey) debtor.overdueDebt += debt
-        else debtor.currentDebt += debt
+        if (!isUpcomingView) {
+          if (item.periodKey < currentKey) debtor.overdueDebt += debt
+          else debtor.currentDebt += debt
+        }
       }
-      let debtors = [...grouped.values()].map((item) => ({ ...item, totalDebt: item.contractDebt })).filter((item) => effectiveFuturePeriod ? item.waitingAmount > 0 : item.totalDebt > 0).map((item) => {
+      let debtors = [...grouped.values()].map((item) => ({ ...item, totalDebt: item.contractDebt })).filter((item) => isUpcomingView ? item.waitingAmount > 0 : item.totalDebt > 0).map((item) => {
         const paymentHistory = paymentsByStudent.get(item.student.id) || []
         const lastPayment = paymentHistory[0]
         const deadline = deadlinesByStudent.get(item.student.id)
@@ -94,8 +98,8 @@ class DebtorController {
       reportInstallments.forEach((item) => { paidByStudent.set(item.student.id, (paidByStudent.get(item.student.id) || 0) + item.paidAmount) })
       const paidStudentCount = [...paidByStudent.values()].filter((amount) => amount > 0).length
       const noPaymentStudentCount = [...paidByStudent.values()].filter((amount) => amount <= 0).length
-      const summary = { debtorCount: effectiveFuturePeriod ? 0 : debtors.length, waitingCount: effectiveFuturePeriod ? debtors.length : 0, totalDebt: effectiveFuturePeriod ? 0 : outstanding, contractDebt: debtors.reduce((sum, item) => sum + item.contractDebt, 0), waitingAmount, scheduledAmount, paidAmount, paidStudentCount, noPaymentStudentCount, overdueDebt: debtors.reduce((sum, item) => sum + item.overdueDebt, 0), partialCount: debtors.filter((item) => item.debtStatus === 'partial').length, unpaidCount: debtors.filter((item) => item.debtStatus === 'unpaid').length }
-      return ApiResponse.ok(res, { debtors: paginatedDebtors, summary, pagination: { page, limit, total, totalPages }, selectedPeriod: requestedPeriod, currentPeriod: currentKey, isFuturePeriod: effectiveFuturePeriod })
+      const summary = { debtorCount: isUpcomingView ? 0 : debtors.length, waitingCount: isUpcomingView ? debtors.length : 0, totalDebt: isUpcomingView ? 0 : outstanding, contractDebt: debtors.reduce((sum, item) => sum + item.contractDebt, 0), waitingAmount, scheduledAmount, paidAmount, paidStudentCount, noPaymentStudentCount, overdueDebt: debtors.reduce((sum, item) => sum + item.overdueDebt, 0), partialCount: debtors.filter((item) => item.debtStatus === 'partial').length, unpaidCount: debtors.filter((item) => item.debtStatus === 'unpaid').length }
+      return ApiResponse.ok(res, { debtors: paginatedDebtors, summary, pagination: { page, limit, total, totalPages }, selectedPeriod: requestedPeriod, currentPeriod: currentKey, isFuturePeriod, isUpcomingView })
     } catch (error) { return next(error) }
   }
 
