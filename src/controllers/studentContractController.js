@@ -310,7 +310,7 @@ class StudentContractController {
           { $group: { _id: null, amount: { $sum: '$amount' } } },
         ]) : [],
         pageIds.length ? StudentContract.find({ _id: { $in: pageIds } })
-          .populate({ path: "student", select: "fullName phone parentPhone photo university faculty course gender educationType hasTaxContract taxContractType", populate: [{ path: "university", select: "name shortName" }, { path: "faculty", select: "name" }] })
+          .populate({ path: "student", select: "fullName phone parentPhone passportSeries passportNumber jshr photo university faculty course gender educationType hasTaxContract taxContractType", populate: [{ path: "university", select: "name shortName" }, { path: "faculty", select: "name" }] })
           .populate("room", "roomNumber block floor") : [],
       ]);
       const summary = summaryContracts.reduce((result, contract) => {

@@ -2,25 +2,30 @@ import { ContractInstallment } from '../models/ContractInstallment.js'
 import { Payment } from '../models/Payment.js'
 import { StudentContract } from '../models/StudentContract.js'
 import { ApiResponse } from '../utils/response.js'
-import { tashkentDayEnd } from '../utils/paymentTime.js'
+import { paymentTimingStatus, tashkentDayEnd } from '../utils/paymentTime.js'
 
 const classify = (periods) => {
-  return classifyCounts(periods.length, periods.filter((item) => item.status === 'onTime').length)
+  return classifyCounts(
+    periods.length,
+    periods.filter((item) => item.status === 'onTime').length,
+    periods.filter((item) => item.status === 'almostOnTime').length,
+    periods.filter((item) => item.status === 'late').length,
+  )
 }
 
-const classifyCounts = (evaluatedPeriods, onTimeCount) => {
+const classifyCounts = (evaluatedPeriods, onTimeCount, almostOnTimePeriods, lateCount) => {
   if (evaluatedPeriods < 3) return 'insufficient'
-  const rate = Math.round((onTimeCount / evaluatedPeriods) * 100)
-  if (rate === 100) return 'onTime'
-  if (rate >= 80) return 'almostOnTime'
+  if (onTimeCount === evaluatedPeriods) return 'onTime'
+  if (lateCount === 0 && almostOnTimePeriods > 0) return 'almostOnTime'
   return 'late'
 }
 
 const summarize = (rows) => {
-  const result = { totalCount: rows.length, onTimeBehaviorCount: 0, almostOnTimeCount: 0, lateBehaviorCount: 0, insufficientCount: 0, evaluatedPeriods: 0, onTimeCount: 0, lateCount: 0 }
+  const result = { totalCount: rows.length, onTimeBehaviorCount: 0, almostOnTimeCount: 0, lateBehaviorCount: 0, insufficientCount: 0, evaluatedPeriods: 0, onTimeCount: 0, almostOnTimePeriods: 0, lateCount: 0 }
   rows.forEach((row) => {
     result.evaluatedPeriods += row.evaluatedPeriods
     result.onTimeCount += row.onTimeCount
+    result.almostOnTimePeriods += row.almostOnTimePeriods
     result.lateCount += row.lateCount
     if (row.behavior === 'onTime') result.onTimeBehaviorCount += 1
     else if (row.behavior === 'almostOnTime') result.almostOnTimeCount += 1
@@ -42,10 +47,11 @@ const group = (students, keyFor, detailsFor) => {
 }
 
 const summarizeGroups = (rows) => {
-  const result = { totalCount: rows.length, onTimeBehaviorCount: 0, almostOnTimeCount: 0, lateBehaviorCount: 0, insufficientCount: 0, evaluatedPeriods: 0, onTimeCount: 0, lateCount: 0 }
+  const result = { totalCount: rows.length, onTimeBehaviorCount: 0, almostOnTimeCount: 0, lateBehaviorCount: 0, insufficientCount: 0, evaluatedPeriods: 0, onTimeCount: 0, almostOnTimePeriods: 0, lateCount: 0 }
   rows.forEach((row) => {
     result.evaluatedPeriods += row.evaluatedPeriods
     result.onTimeCount += row.onTimeCount
+    result.almostOnTimePeriods += row.almostOnTimePeriods
     result.lateCount += row.lateCount
     if (row.behavior === 'onTime') result.onTimeBehaviorCount += 1
     else if (row.behavior === 'almostOnTime') result.almostOnTimeCount += 1
@@ -82,17 +88,18 @@ class PaymentBehaviorController {
         let running = 0
         let completedAt = null
         ;(allocations.get(item.id) || []).forEach((allocation) => { running += allocation.amount; if (!completedAt && running >= item.amount) completedAt = allocation.paidAt })
-        const dueDayEnd = tashkentDayEnd(item.dueDate)
-        const status = running >= item.amount && completedAt && completedAt <= dueDayEnd ? 'onTime' : 'late'
+        const status = paymentTimingStatus({ dueDate: item.dueDate, completedAt, isPaid: running >= item.amount, now: todayEnd })
+        if (status === 'pending') return
         entry.periods.push({ periodKey: item.periodKey, dueDate: item.dueDate, completedAt, amount: item.amount, paidAmount: Math.min(item.amount, running), debtAmount: Math.max(0, item.amount - running), status })
       })
       const students = [...byStudent.values()].map((entry) => {
         const onTimeCount = entry.periods.filter((item) => item.status === 'onTime').length
-        const lateCount = entry.periods.length - onTimeCount
-        return { ...entry, evaluatedPeriods: entry.periods.length, onTimeCount, lateCount, onTimeRate: entry.periods.length ? Math.round((onTimeCount / entry.periods.length) * 100) : null, behavior: classify(entry.periods) }
+        const almostOnTimePeriods = entry.periods.filter((item) => item.status === 'almostOnTime').length
+        const lateCount = entry.periods.filter((item) => item.status === 'late').length
+        return { ...entry, evaluatedPeriods: entry.periods.length, onTimeCount, almostOnTimePeriods, lateCount, onTimeRate: entry.periods.length ? Math.round((onTimeCount / entry.periods.length) * 100) : null, behavior: classify(entry.periods) }
       }).sort((a, b) => String(a.room.floor).localeCompare(String(b.room.floor), 'uz', { numeric: true }) || String(a.room.roomNumber).localeCompare(String(b.room.roomNumber), 'uz', { numeric: true }) || a.student.fullName.localeCompare(b.student.fullName, 'uz'))
       const rooms = group(students, (row) => row.room.id, (row) => ({ room: row.room }))
-        .map((room) => ({ ...room, behavior: classifyCounts(room.evaluatedPeriods, room.onTimeCount) }))
+        .map((room) => ({ ...room, behavior: classifyCounts(room.evaluatedPeriods, room.onTimeCount, room.almostOnTimePeriods, room.lateCount) }))
         .sort((a, b) => String(a.room.floor).localeCompare(String(b.room.floor), 'uz', { numeric: true }) || String(a.room.roomNumber).localeCompare(String(b.room.roomNumber), 'uz', { numeric: true }))
       const roomsByFloor = new Map()
       rooms.forEach((room) => {

@@ -3,7 +3,7 @@ import { ContractInstallment } from '../models/ContractInstallment.js'
 import { Payment } from '../models/Payment.js'
 import { StudentContract } from '../models/StudentContract.js'
 import { ApiResponse } from '../utils/response.js'
-import { periodKeyInTashkent, tashkentDayEnd } from '../utils/paymentTime.js'
+import { paymentTimingStatus, periodKeyInTashkent } from '../utils/paymentTime.js'
 
 const summaryOf = (rows) => {
   const summary = rows.reduce((result, row) => {
@@ -14,8 +14,8 @@ const summaryOf = (rows) => {
     result[row.debtAmount <= 0 ? 'paidCount' : 'remainingCount'] += 1
     result[`${row.paymentStatus}Count`] += 1
     return result
-  }, { studentCount: 0, scheduledAmount: 0, paidAmount: 0, debtAmount: 0, paidCount: 0, remainingCount: 0, onTimeCount: 0, lateCount: 0, pendingCount: 0 })
-  const decided = summary.onTimeCount + summary.lateCount
+  }, { studentCount: 0, scheduledAmount: 0, paidAmount: 0, debtAmount: 0, paidCount: 0, remainingCount: 0, onTimeCount: 0, almostOnTimeCount: 0, lateCount: 0, pendingCount: 0 })
+  const decided = summary.onTimeCount + summary.almostOnTimeCount + summary.lateCount
   summary.onTimeRate = decided ? Math.round((summary.onTimeCount / decided) * 100) : null
   summary.activity = decided ? (summary.onTimeRate >= 80 ? 'active' : summary.onTimeRate >= 50 ? 'attention' : 'lagging') : 'pending'
   return summary
@@ -45,11 +45,12 @@ const groupFloorsFromRooms = (rooms) => {
     const remainingRoomCount = floorRooms.length - paidRoomCount
     const paidRoomRate = floorRooms.length ? Math.round((paidRoomCount / floorRooms.length) * 100) : null
     const lateRoomCount = floorRooms.filter((room) => room.lateCount > 0).length
-    const onTimeRoomCount = floorRooms.filter((room) => room.lateCount === 0 && room.onTimeCount > 0).length
-    const pendingRoomCount = floorRooms.length - lateRoomCount - onTimeRoomCount
-    const timingDecided = onTimeRoomCount + lateRoomCount
+    const almostOnTimeRoomCount = floorRooms.filter((room) => room.lateCount === 0 && room.almostOnTimeCount > 0).length
+    const onTimeRoomCount = floorRooms.filter((room) => room.lateCount === 0 && room.almostOnTimeCount === 0 && room.onTimeCount > 0).length
+    const pendingRoomCount = floorRooms.length - lateRoomCount - almostOnTimeRoomCount - onTimeRoomCount
+    const timingDecided = onTimeRoomCount + almostOnTimeRoomCount + lateRoomCount
     const onTimeRoomRate = timingDecided ? Math.round((onTimeRoomCount / timingDecided) * 100) : null
-    return { ...floor, roomCount: floorRooms.length, studentCount, paidRoomCount, remainingRoomCount, paidRoomRate, onTimeRoomCount, lateRoomCount, pendingRoomCount, onTimeRoomRate }
+    return { ...floor, roomCount: floorRooms.length, studentCount, paidRoomCount, remainingRoomCount, paidRoomRate, onTimeRoomCount, almostOnTimeRoomCount, lateRoomCount, pendingRoomCount, onTimeRoomRate }
   }).sort((a, b) => `${a.block} ${a.floor}`.localeCompare(`${b.block} ${b.floor}`, 'uz', { numeric: true, sensitivity: 'base' }))
 }
 
@@ -59,7 +60,6 @@ class PaymentStatisticsController {
       if (!mongoose.isValidObjectId(req.params.roomId)) return ApiResponse.notFound(res, 'Xona topilmadi')
       const now = new Date()
       const period = /^\d{4}-\d{2}$/.test(String(req.query.period || '')) ? String(req.query.period) : periodKeyInTashkent(now)
-      const todayEnd = tashkentDayEnd(now)
       const contractIds = await StudentContract.distinct('_id', { room: req.params.roomId, status: { $ne: 'cancelled' } })
       const installments = await ContractInstallment.find({ periodKey: period, contract: { $in: contractIds } })
         .populate({ path: 'student', select: 'fullName phone photo' })
@@ -79,8 +79,7 @@ class PaymentStatisticsController {
         let completedAt = null
         allocated.forEach((allocation) => { paidAmount += allocation.amount; if (!completedAt && paidAmount >= item.amount) completedAt = allocation.paidAt })
         paidAmount = Math.min(item.amount, Math.max(0, paidAmount))
-        const dueDayEnd = tashkentDayEnd(item.dueDate)
-        const paymentStatus = paidAmount >= item.amount ? ((completedAt || item.updatedAt) <= dueDayEnd ? 'onTime' : 'late') : dueDayEnd <= todayEnd ? 'late' : 'pending'
+        const paymentStatus = paymentTimingStatus({ dueDate: item.dueDate, completedAt: completedAt || item.updatedAt, isPaid: paidAmount >= item.amount, now })
         return { installmentId: item.id, student: item.student, contractId: item.contract.id, contractNumber: item.contract.contractNumber, room: item.contract.room, periodKey: item.periodKey, dueDate: item.dueDate, completedAt, amount: item.amount, paidAmount, debtAmount: Math.max(0, item.amount - paidAmount), paymentStatus }
       }).sort((a, b) => String(a.student.fullName || '').localeCompare(String(b.student.fullName || ''), 'uz', { sensitivity: 'base' }))
       return ApiResponse.ok(res, { period, students })
@@ -91,7 +90,6 @@ class PaymentStatisticsController {
     try {
       const now = new Date()
       const period = /^\d{4}-\d{2}$/.test(String(req.query.period || '')) ? String(req.query.period) : periodKeyInTashkent(now)
-      const todayEnd = tashkentDayEnd(now)
       const contractIds = await StudentContract.distinct('_id', { status: { $ne: 'cancelled' } })
       const installments = await ContractInstallment.find({ periodKey: period, contract: { $in: contractIds } })
         .populate({ path: 'student', select: 'fullName phone photo' })
@@ -120,14 +118,11 @@ class PaymentStatisticsController {
           if (!completedAt && running >= item.amount) completedAt = allocation.paidAt
         })
         const dueDate = new Date(item.dueDate)
-        const dueDayEnd = tashkentDayEnd(dueDate)
         // The installment's cached paidAmount can be stale in legacy data.
         // Statistics must reflect only active, non-cancelled payment allocations.
         const paidAmount = Math.min(item.amount, Math.max(0, running))
         const isPaid = paidAmount >= item.amount
-        let paymentStatus = 'pending'
-        if (isPaid) paymentStatus = (completedAt || item.updatedAt) <= dueDayEnd ? 'onTime' : 'late'
-        else if (dueDayEnd <= todayEnd) paymentStatus = 'late'
+        const paymentStatus = paymentTimingStatus({ dueDate, completedAt: completedAt || item.updatedAt, isPaid, now })
         return {
           installmentId: item.id,
           student: item.student,

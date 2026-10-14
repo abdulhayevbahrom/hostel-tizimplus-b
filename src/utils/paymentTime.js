@@ -22,3 +22,18 @@ export const tashkentDayEnd = (value = new Date()) => {
 }
 
 export const tashkentDayStart = (value = new Date()) => new Date(tashkentDayEnd(value).getTime() - (24 * 60 * 60 * 1000) + 1)
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+export const paymentTimingStatus = ({ dueDate, completedAt, isPaid, now = new Date() }) => {
+  const dueEnd = tashkentDayEnd(dueDate)
+  const onTimeEnd = new Date(dueEnd.getTime() + (3 * DAY_MS))
+  const almostOnTimeEnd = new Date(dueEnd.getTime() + (5 * DAY_MS))
+  if (isPaid) {
+    const paidAt = new Date(completedAt)
+    if (paidAt <= onTimeEnd) return 'onTime'
+    if (paidAt <= almostOnTimeEnd) return 'almostOnTime'
+    return 'late'
+  }
+  return tashkentDayEnd(now) > almostOnTimeEnd ? 'late' : 'pending'
+}

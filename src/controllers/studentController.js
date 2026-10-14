@@ -1,6 +1,7 @@
 import mongoose from 'mongoose'
 import { BlacklistEntry } from '../models/BlacklistEntry.js'
 import { Faculty } from '../models/Faculty.js'
+import { Room } from '../models/Room.js'
 import { Student } from '../models/Student.js'
 import { StudentContract } from '../models/StudentContract.js'
 import { University } from '../models/University.js'
@@ -184,11 +185,16 @@ class StudentController {
       if (course >= 1 && course <= 6) filter.course = course
       if (['daytime', 'evening', 'extramural', 'employed'].includes(req.query.educationType)) filter.educationType = req.query.educationType
       if (['green', 'warning', 'red'].includes(req.query.studentStatus)) filter.studentStatus = req.query.studentStatus
-      if (mongoose.isValidObjectId(req.query.room)) {
+      const floor = String(req.query.floor || '').trim().slice(0, 30)
+      if (mongoose.isValidObjectId(req.query.room) || floor) {
         const now = new Date()
         const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
         const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999)
-        const studentIds = await StudentContract.distinct('student', { room: req.query.room, status: 'active', startDate: { $lte: todayEnd }, endDate: { $gte: todayStart } })
+        const roomFilter = {}
+        if (mongoose.isValidObjectId(req.query.room)) roomFilter._id = req.query.room
+        if (floor) roomFilter.floor = floor
+        const roomIds = await Room.distinct('_id', roomFilter)
+        const studentIds = await StudentContract.distinct('student', { room: { $in: roomIds }, status: 'active', startDate: { $lte: todayEnd }, endDate: { $gte: todayStart } })
         filter._id = { $in: studentIds }
       }
       const now = new Date()
