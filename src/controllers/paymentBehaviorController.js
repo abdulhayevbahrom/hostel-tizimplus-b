@@ -87,16 +87,19 @@ class PaymentBehaviorController {
         if (entry.periods.length >= 6) return
         let running = 0
         let completedAt = null
-        ;(allocations.get(item.id) || []).forEach((allocation) => { running += allocation.amount; if (!completedAt && running >= item.amount) completedAt = allocation.paidAt })
+        const installmentAllocations = allocations.get(item.id) || []
+        const lastPaidAt = installmentAllocations.length ? installmentAllocations[installmentAllocations.length - 1].paidAt : null
+        installmentAllocations.forEach((allocation) => { running += allocation.amount; if (!completedAt && running >= item.amount) completedAt = allocation.paidAt })
         const status = paymentTimingStatus({ dueDate: item.dueDate, completedAt, isPaid: running >= item.amount, now: todayEnd })
         if (status === 'pending') return
-        entry.periods.push({ periodKey: item.periodKey, dueDate: item.dueDate, completedAt, amount: item.amount, paidAmount: Math.min(item.amount, running), debtAmount: Math.max(0, item.amount - running), status })
+        entry.periods.push({ periodKey: item.periodKey, dueDate: item.dueDate, completedAt, lastPaidAt, amount: item.amount, paidAmount: Math.min(item.amount, running), debtAmount: Math.max(0, item.amount - running), status })
       })
       const students = [...byStudent.values()].map((entry) => {
         const onTimeCount = entry.periods.filter((item) => item.status === 'onTime').length
         const almostOnTimePeriods = entry.periods.filter((item) => item.status === 'almostOnTime').length
         const lateCount = entry.periods.filter((item) => item.status === 'late').length
-        return { ...entry, evaluatedPeriods: entry.periods.length, onTimeCount, almostOnTimePeriods, lateCount, onTimeRate: entry.periods.length ? Math.round((onTimeCount / entry.periods.length) * 100) : null, behavior: classify(entry.periods) }
+        const lastPaidAt = entry.periods.reduce((latest, item) => (!item.lastPaidAt || (latest && latest >= item.lastPaidAt) ? latest : item.lastPaidAt), null)
+        return { ...entry, lastPaidAt, evaluatedPeriods: entry.periods.length, onTimeCount, almostOnTimePeriods, lateCount, onTimeRate: entry.periods.length ? Math.round((onTimeCount / entry.periods.length) * 100) : null, behavior: classify(entry.periods) }
       }).sort((a, b) => String(a.room.floor).localeCompare(String(b.room.floor), 'uz', { numeric: true }) || String(a.room.roomNumber).localeCompare(String(b.room.roomNumber), 'uz', { numeric: true }) || a.student.fullName.localeCompare(b.student.fullName, 'uz'))
       const rooms = group(students, (row) => row.room.id, (row) => ({ room: row.room }))
         .map((room) => ({ ...room, behavior: classifyCounts(room.evaluatedPeriods, room.onTimeCount, room.almostOnTimePeriods, room.lateCount) }))

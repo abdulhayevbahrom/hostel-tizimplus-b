@@ -75,12 +75,13 @@ class PaymentStatisticsController {
       }))
       const students = usable.map((item) => {
         const allocated = allocations.get(item.id) || []
+        const lastPaidAt = allocated.length ? allocated[allocated.length - 1].paidAt : null
         let paidAmount = 0
         let completedAt = null
         allocated.forEach((allocation) => { paidAmount += allocation.amount; if (!completedAt && paidAmount >= item.amount) completedAt = allocation.paidAt })
         paidAmount = Math.min(item.amount, Math.max(0, paidAmount))
         const paymentStatus = paymentTimingStatus({ dueDate: item.dueDate, completedAt: completedAt || item.updatedAt, isPaid: paidAmount >= item.amount, now })
-        return { installmentId: item.id, student: item.student, contractId: item.contract.id, contractNumber: item.contract.contractNumber, room: item.contract.room, periodKey: item.periodKey, dueDate: item.dueDate, completedAt, amount: item.amount, paidAmount, debtAmount: Math.max(0, item.amount - paidAmount), paymentStatus }
+        return { installmentId: item.id, student: item.student, contractId: item.contract.id, contractNumber: item.contract.contractNumber, room: item.contract.room, periodKey: item.periodKey, dueDate: item.dueDate, completedAt, lastPaidAt, amount: item.amount, paidAmount, debtAmount: Math.max(0, item.amount - paidAmount), paymentStatus }
       }).sort((a, b) => String(a.student.fullName || '').localeCompare(String(b.student.fullName || ''), 'uz', { sensitivity: 'base' }))
       return ApiResponse.ok(res, { period, students })
     } catch (error) { return next(error) }
@@ -111,6 +112,7 @@ class PaymentStatisticsController {
 
       const students = usable.map((item) => {
         const allocated = allocations.get(item.id) || []
+        const lastPaidAt = allocated.length ? allocated[allocated.length - 1].paidAt : null
         let running = 0
         let completedAt = null
         allocated.forEach((allocation) => {
@@ -132,6 +134,7 @@ class PaymentStatisticsController {
           periodKey: item.periodKey,
           dueDate: item.dueDate,
           completedAt,
+          lastPaidAt,
           amount: item.amount,
           paidAmount,
           debtAmount: Math.max(0, item.amount - paidAmount),
