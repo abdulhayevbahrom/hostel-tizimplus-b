@@ -181,8 +181,11 @@ class StudentController {
       }
       if (mongoose.isValidObjectId(req.query.university)) filter.university = req.query.university
       if (mongoose.isValidObjectId(req.query.faculty)) filter.faculty = req.query.faculty
-      const course = Number.parseInt(req.query.course, 10)
-      if (course >= 1 && course <= 6) filter.course = course
+      const courses = [...new Set((Array.isArray(req.query.course) ? req.query.course : [req.query.course])
+        .flatMap((value) => String(value || '').split(','))
+        .map((value) => Number.parseInt(value, 10))
+        .filter((value) => value >= 1 && value <= 6))]
+      if (courses.length) filter.course = { $in: courses }
       if (['daytime', 'evening', 'extramural', 'employed'].includes(req.query.educationType)) filter.educationType = req.query.educationType
       if (['green', 'warning', 'red'].includes(req.query.studentStatus)) filter.studentStatus = req.query.studentStatus
       const floor = String(req.query.floor || '').trim().slice(0, 30)

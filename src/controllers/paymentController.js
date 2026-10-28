@@ -21,7 +21,18 @@ const paymentPopulate = [
   { path: 'auditHistory.performedBy', select: 'firstname lastname role' },
 ]
 
-const snapshot = (payment) => ({ amount: payment.amount, method: payment.method, fundHolder: payment.fundHolder || 'organization', paymentParts: effectivePaymentParts(payment), cashSession: payment.cashSession || null, note: payment.note || '' })
+const snapshot = (payment) => ({ amount: payment.amount, method: payment.method, fundHolder: payment.fundHolder || 'organization', paymentParts: effectivePaymentParts(payment), cashSession: payment.cashSession || null, paymentDate: payment.paymentDate, note: payment.note || '' })
+
+const parsePaymentDate = (value) => {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ''))
+  if (!match) return null
+  const [, year, month, day] = match.map(Number)
+  const calendarDate = new Date(Date.UTC(year, month - 1, day))
+  if (calendarDate.getUTCFullYear() !== year || calendarDate.getUTCMonth() !== month - 1 || calendarDate.getUTCDate() !== day) return null
+  return new Date(`${value}T00:00:00+05:00`)
+}
+
+const effectivePaymentDate = (payment) => payment.paymentDate || payment.createdAt
 
 const adjustCashSession = async (payment, oldSnapshot, newSnapshot, cancelled = false, session = null) => {
   const cashSessionId = oldSnapshot.cashSession || payment.cashSession
@@ -83,7 +94,10 @@ class PaymentController {
       const { search = '', method = '', from = '', to = '', period = '' } = req.query
       const filter = {}
       if (method && PAYMENT_METHODS.includes(method)) filter.$and = [{ $or: [{ method }, { paymentParts: { $elemMatch: { method, amount: { $gt: 0 } } } }] }]
-      if (from || to) filter.createdAt = { ...(from ? { $gte: new Date(`${from}T00:00:00+05:00`) } : {}), ...(to ? { $lte: new Date(`${to}T23:59:59.999+05:00`) } : {}) }
+      if (from || to) {
+        const dateRange = { ...(from ? { $gte: new Date(`${from}T00:00:00+05:00`) } : {}), ...(to ? { $lte: new Date(`${to}T23:59:59.999+05:00`) } : {}) }
+        filter.$and = [...(filter.$and || []), { $or: [{ paymentDate: dateRange }, { paymentDate: { $exists: false }, createdAt: dateRange }] }]
+      }
       const [financialContractIds, financialStudentIds] = await Promise.all([
         StudentContract.distinct('_id', { status: { $ne: 'cancelled' } }),
         Student.distinct('_id'),
@@ -94,7 +108,8 @@ class PaymentController {
         const periodStart = new Date(`${period}-01T00:00:00+05:00`)
         const nextPeriod = `${month === 12 ? year + 1 : year}-${String(month === 12 ? 1 : month + 1).padStart(2, '0')}`
         const periodEnd = new Date(`${nextPeriod}-01T00:00:00+05:00`)
-        filter.$and = [{ $or: [{ paymentPurpose: { $ne: 'deposit' }, 'allocations.installment': { $in: periodInstallments.map((item) => item._id) } }, { paymentPurpose: 'deposit', createdAt: { $gte: periodStart, $lt: periodEnd } }] }]
+        const periodDate = { $gte: periodStart, $lt: periodEnd }
+        filter.$and = [...(filter.$and || []), { $or: [{ paymentPurpose: { $ne: 'deposit' }, 'allocations.installment': { $in: periodInstallments.map((item) => item._id) } }, { paymentPurpose: 'deposit', $or: [{ paymentDate: periodDate }, { paymentDate: { $exists: false }, createdAt: periodDate }] }] }]
       }
       filter.$and = [...(filter.$and || []), { $or: [{ contract: { $in: financialContractIds } }, { paymentPurpose: 'deposit', student: { $in: financialStudentIds } }] }]
       const needle = String(search).trim().toLowerCase()
@@ -112,7 +127,7 @@ class PaymentController {
       const total = await Payment.countDocuments(filter)
       const totalPages = Math.max(1, Math.ceil(total / limit))
       const page = Math.min(requestedPage, totalPages)
-      const payments = await Payment.find(filter).populate(paymentPopulate).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit)
+      const payments = await Payment.find(filter).populate(paymentPopulate).sort({ paymentDate: -1, createdAt: -1 }).skip((page - 1) * limit).limit(limit)
       const reportInstallments = period ? periodInstallments : await ContractInstallment.find({ contract: { $in: financialContractIds } }).select('student amount paidAmount periodKey dueDate').lean()
       const validStudentIds = new Set(financialStudentIds.map((id) => id.toString()))
       const studentInstallments = reportInstallments.filter((item) => validStudentIds.has(item.student.toString()))
@@ -164,7 +179,7 @@ class PaymentController {
       for (const payment of payments) {
         const installment = payment.allocations?.[0]?.installment
         if (!installment?.periodKey) continue
-        const paymentPeriod = periodKeyInTashkent(payment.createdAt)
+        const paymentPeriod = periodKeyInTashkent(effectivePaymentDate(payment))
         if (installment.periodKey <= paymentPeriod) continue
         const amount = payment.allocations?.[0]?.amount || payment.amount
         if (!groups.has(installment.periodKey)) {
@@ -186,6 +201,7 @@ class PaymentController {
           method: payment.method,
           paymentParts: effectivePaymentParts(payment),
           note: payment.note,
+          paymentDate: effectivePaymentDate(payment),
           createdAt: payment.createdAt,
         })
       }
@@ -245,6 +261,8 @@ class PaymentController {
     const session = await mongoose.startSession()
     try {
       const { contract: contractId, installment: installmentId, note = '' } = req.body
+      const paymentDate = parsePaymentDate(req.body.paymentDate)
+      if (!paymentDate) return ApiResponse.badRequest(res, 'To‘lov sanasini tanlang')
       const paymentPurpose = req.body.paymentPurpose === 'deposit' ? 'deposit' : 'contract'
       if (paymentPurpose === 'contract' && !mongoose.isValidObjectId(contractId)) return ApiResponse.badRequest(res, 'Shartnomani tanlang')
       if (paymentPurpose === 'contract' && !mongoose.isValidObjectId(installmentId)) return ApiResponse.badRequest(res, 'To‘lov oyini tanlang')
@@ -278,7 +296,7 @@ class PaymentController {
           )
         }
         if (installment) { installment.paidAmount += amount; installment.status = installment.paidAmount >= installment.amount ? 'paid' : 'partial'; await installment.save({ session }) }
-        ;[payment] = await Payment.create([{ student: studentId, contract: contract?._id || null, paymentPurpose, amount, method, fundHolder, paymentParts, note, receivedBy: req.employee._id, cashSession: cashSession?._id || null, allocations: installment ? [{ installment: installment._id, amount }] : [], auditHistory: [{ action: 'created', performedBy: req.employee._id, after: { amount, method, fundHolder, paymentParts, note } }] }], { session })
+        ;[payment] = await Payment.create([{ student: studentId, contract: contract?._id || null, paymentPurpose, amount, method, fundHolder, paymentParts, paymentDate, note, receivedBy: req.employee._id, cashSession: cashSession?._id || null, allocations: installment ? [{ installment: installment._id, amount }] : [], auditHistory: [{ action: 'created', performedBy: req.employee._id, after: { amount, method, fundHolder, paymentParts, paymentDate, note } }] }], { session })
       })
       await payment.populate(paymentPopulate); this.emit(req, 'created', payment)
       if (cashSession) req.app.get('io')?.emit('cash-sessions:changed', { action: 'payment-created', cashierId: req.employee.id })
@@ -300,6 +318,8 @@ class PaymentController {
         before = snapshot(payment)
         const receiver = payment.receivedBy ? await Employee.findById(payment.receivedBy).select('role').session(session) : null
         const paymentParts = buildPaymentParts(req.body, receiver?.role)
+        const paymentDate = parsePaymentDate(req.body.paymentDate)
+        if (!paymentDate) throw Object.assign(new Error('To‘lov sanasini tanlang'), { paymentValidation: true })
         const amount = paymentPartsTotal(paymentParts)
         const method = paymentMethodValue(paymentParts)
         const fundHolder = paymentFundHolderValue(paymentParts)
@@ -322,7 +342,7 @@ class PaymentController {
           const receiverSession = await CashSession.findOneAndUpdate({ cashier: receiver._id, status: 'open' }, { $setOnInsert: { cashier: receiver._id, status: 'open' } }, { new: true, upsert: true, setDefaultsOnInsert: true, session })
           payment.cashSession = receiverSession._id
         }
-        payment.amount = amount; payment.method = method; payment.note = String(req.body.note || '').trim(); payment.allocations = installment ? [{ installment: installment._id, amount }] : []
+        payment.amount = amount; payment.method = method; payment.paymentDate = paymentDate; payment.note = String(req.body.note || '').trim(); payment.allocations = installment ? [{ installment: installment._id, amount }] : []
         payment.auditHistory.push({ action: 'updated', performedBy: req.employee._id, before, after: snapshot(payment) })
         await adjustCashSession(payment, before, snapshot(payment), false, session)
         await payment.save({ session })

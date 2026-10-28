@@ -39,7 +39,7 @@ class DebtorController {
 
       const studentIds = [...new Set(installments.map((item) => item.student?._id?.toString()).filter(Boolean))]
       const paymentRows = await Payment.find({ student: { $in: studentIds.map((id) => new mongoose.Types.ObjectId(id)) }, contract: { $in: financialContractIds }, paymentPurpose: { $ne: 'deposit' } })
-        .select('student contract paymentPurpose amount method paymentParts fundHolder note allocations createdAt status cancelledAt')
+        .select('student contract paymentPurpose amount method paymentParts fundHolder note allocations paymentDate createdAt status cancelledAt')
         .populate('contract', 'contractNumber')
         .populate('allocations.installment', 'periodKey')
         .sort({ createdAt: -1 })
@@ -55,7 +55,8 @@ class DebtorController {
         periodsByStudent.get(key).push({ id: item.id, contractId: item.contract.id, contractNumber: item.contract.contractNumber, periodKey: item.periodKey, dueDate: item.dueDate, amount: item.amount, paidAmount: item.paidAmount, debt, status: item.status, isUpcoming: new Date(item.dueDate) > todayEnd, room: item.contract.room })
       })
       const paymentsByStudent = new Map()
-      paymentRows.forEach((payment) => { const key = payment.student.toString(); if (!paymentsByStudent.has(key)) paymentsByStudent.set(key, []); paymentsByStudent.get(key).push(payment) })
+      paymentRows.forEach((payment) => { payment.paymentDate ||= payment.createdAt; const key = payment.student.toString(); if (!paymentsByStudent.has(key)) paymentsByStudent.set(key, []); paymentsByStudent.get(key).push(payment) })
+      paymentsByStudent.forEach((payments) => payments.sort((a, b) => new Date(b.paymentDate) - new Date(a.paymentDate)))
       const grouped = new Map()
       for (const item of installments) {
         if (!item.student || !item.contract) continue
@@ -78,7 +79,7 @@ class DebtorController {
         const lastPayment = paymentHistory[0]
         const deadline = deadlinesByStudent.get(item.student.id)
         const allPeriods = periodsByStudent.get(item.student.id) || item.periods
-        return { ...item, contracts: [...item.contracts.values()], periods: allPeriods, debtPeriods: item.periods, periodCount: item.periods.length, oldestDueDate: item.periods[0]?.dueDate, lastPaymentAt: lastPayment?.createdAt || null, lastPaymentAmount: lastPayment?.amount || 0, paymentHistory, debtStatus: item.paidTowardsDebt > 0 ? 'partial' : 'unpaid', paymentDeadline: deadline?.deadline || null, deadlineSetBy: deadline?.setBy || null, isDeadlineReached: Boolean(deadline && new Date(deadline.deadline) <= todayEnd) }
+        return { ...item, contracts: [...item.contracts.values()], periods: allPeriods, debtPeriods: item.periods, periodCount: item.periods.length, oldestDueDate: item.periods[0]?.dueDate, lastPaymentAt: lastPayment?.paymentDate || lastPayment?.createdAt || null, lastPaymentAmount: lastPayment?.amount || 0, paymentHistory, debtStatus: item.paidTowardsDebt > 0 ? 'partial' : 'unpaid', paymentDeadline: deadline?.deadline || null, deadlineSetBy: deadline?.setBy || null, isDeadlineReached: Boolean(deadline && new Date(deadline.deadline) <= todayEnd) }
       }).sort((a, b) => b.totalDebt - a.totalDebt)
       if (roomFilter) debtors = debtors.filter((item) => item.contracts.some((contract) => contract.room?.id === roomFilter))
       if (status !== 'all') debtors = debtors.filter((item) => status === 'overdue' ? item.overdueDebt > 0 : item.debtStatus === status)

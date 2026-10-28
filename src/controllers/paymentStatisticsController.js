@@ -66,12 +66,12 @@ class PaymentStatisticsController {
         .populate({ path: 'contract', select: 'contractNumber room', populate: { path: 'room', select: 'roomNumber block floor' } })
         .sort({ dueDate: 1 })
       const usable = installments.filter((item) => item.student && item.contract?.room)
-      const payments = await Payment.find({ status: 'active', cancelledAt: null, 'allocations.installment': { $in: usable.map((item) => item._id) } }).select('allocations createdAt').sort({ createdAt: 1 })
+      const payments = await Payment.find({ status: 'active', cancelledAt: null, 'allocations.installment': { $in: usable.map((item) => item._id) } }).select('allocations paymentDate createdAt').sort({ paymentDate: 1, createdAt: 1 })
       const allocations = new Map()
       payments.forEach((payment) => payment.allocations.forEach((allocation) => {
         const key = allocation.installment.toString()
         if (!allocations.has(key)) allocations.set(key, [])
-        allocations.get(key).push({ amount: allocation.amount, paidAt: payment.createdAt })
+        allocations.get(key).push({ amount: allocation.amount, paidAt: payment.paymentDate || payment.createdAt })
       }))
       const students = usable.map((item) => {
         const allocated = allocations.get(item.id) || []
@@ -100,14 +100,14 @@ class PaymentStatisticsController {
       const usable = installments.filter((item) => item.student && item.contract?.room)
       const installmentIds = usable.map((item) => item._id)
       const payments = await Payment.find({ status: 'active', cancelledAt: null, 'allocations.installment': { $in: installmentIds } })
-        .select('allocations createdAt')
-        .sort({ createdAt: 1 })
+        .select('allocations paymentDate createdAt')
+        .sort({ paymentDate: 1, createdAt: 1 })
 
       const allocations = new Map()
       payments.forEach((payment) => payment.allocations.forEach((allocation) => {
         const key = allocation.installment.toString()
         if (!allocations.has(key)) allocations.set(key, [])
-        allocations.get(key).push({ amount: allocation.amount, paidAt: payment.createdAt })
+        allocations.get(key).push({ amount: allocation.amount, paidAt: payment.paymentDate || payment.createdAt })
       }))
 
       const students = usable.map((item) => {

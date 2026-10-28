@@ -15,8 +15,8 @@ const auditSchema = new mongoose.Schema({
   action: { type: String, enum: ['created', 'updated', 'cancelled'], required: true },
   performedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee', required: true },
   performedAt: { type: Date, default: Date.now },
-  before: { amount: Number, method: String, fundHolder: String, paymentParts: mongoose.Schema.Types.Mixed, note: String },
-  after: { amount: Number, method: String, fundHolder: String, paymentParts: mongoose.Schema.Types.Mixed, note: String },
+  before: { amount: Number, method: String, fundHolder: String, paymentParts: mongoose.Schema.Types.Mixed, paymentDate: Date, note: String },
+  after: { amount: Number, method: String, fundHolder: String, paymentParts: mongoose.Schema.Types.Mixed, paymentDate: Date, note: String },
 }, { _id: true })
 
 const paymentSchema = new mongoose.Schema({
@@ -27,6 +27,7 @@ const paymentSchema = new mongoose.Schema({
   method: { type: String, enum: ['cash', 'card', 'bank', 'online', 'mixed'], required: true, index: true },
   fundHolder: { type: String, enum: ['cashier', 'organization', 'mixed'], default: 'organization', index: true },
   paymentParts: { type: [paymentPartSchema], default: undefined },
+  paymentDate: { type: Date, required: true, index: true },
   note: { type: String, trim: true, maxlength: 500, default: '' },
   allocations: { type: [allocationSchema], default: [] },
   receivedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee', default: null, index: true },
@@ -38,6 +39,7 @@ const paymentSchema = new mongoose.Schema({
 }, { timestamps: true })
 
 paymentSchema.index({ createdAt: -1 })
+paymentSchema.index({ paymentDate: -1, createdAt: -1 })
 paymentSchema.index({ contract: 1, status: 1, cancelledAt: 1, createdAt: 1 })
 paymentSchema.index({ contract: 1, createdAt: -1 })
 paymentSchema.index({ student: 1, createdAt: -1 })

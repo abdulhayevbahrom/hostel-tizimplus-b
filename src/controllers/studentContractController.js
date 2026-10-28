@@ -9,6 +9,7 @@ import {
   buildContractInstallments,
   calculateContractPayment,
 } from "../utils/contractPayment.js";
+import { tashkentDayStart } from "../utils/paymentTime.js";
 
 class StudentContractController {
   cleanPayload(body) {
@@ -83,7 +84,7 @@ class StudentContractController {
     const desiredInstallments = buildContractInstallments(contract);
     const existingInstallments = await ContractInstallment.find({
       contract: contract._id,
-    });
+    }).setOptions({ withDeleted: true });
     const existingByIndex = new Map(
       existingInstallments.map((item) => [item.periodIndex, item]),
     );
@@ -100,6 +101,9 @@ class StudentContractController {
               periodKey: desired.periodKey,
               dueDate: desired.dueDate,
               amount: desired.amount,
+              isDeleted: false,
+              deletedAt: null,
+              deletedBy: null,
               status:
                 paidAmount <= 0
                   ? "unpaid"
@@ -111,6 +115,17 @@ class StudentContractController {
         },
       };
     });
+    const desiredIndexes = new Set(desiredInstallments.map((item) => item.periodIndex));
+    existingInstallments
+      .filter((item) => !desiredIndexes.has(item.periodIndex))
+      .forEach((item) => {
+        operations.push({
+          updateOne: {
+            filter: { _id: item._id },
+            update: { $set: { isDeleted: true, deletedAt: new Date() } },
+          },
+        });
+      });
     if (operations.length) await ContractInstallment.bulkWrite(operations);
   }
 
@@ -121,6 +136,11 @@ class StudentContractController {
     const existingInstallments = await ContractInstallment.find({
       contract: contract._id,
     }).select("periodIndex paidAmount");
+    const removedPaidInstallment = existingInstallments.find(
+      (existing) => !desiredByIndex.has(existing.periodIndex) && (existing.paidAmount || 0) > 0,
+    );
+    if (removedPaidInstallment)
+      return "To‘lov qilingan davrni shartnoma muddatidan chiqarib bo‘lmaydi";
     const invalidInstallment = existingInstallments.find((existing) => {
       const desired = desiredByIndex.get(existing.periodIndex);
       return desired && (existing.paidAmount || 0) > desired.amount;
@@ -368,21 +388,13 @@ class StudentContractController {
       const payload = this.cleanPayload(req.body);
       if (!Number.isFinite(payload.paymentAmount) || payload.paymentAmount <= 0)
         return ApiResponse.badRequest(res, "To‘lov summasi 0 dan katta bo‘lishi kerak");
-      if (existing.status === "completed")
-        return ApiResponse.conflict(
-          res,
-          "Yakunlangan shartnomani o‘zgartirib bo‘lmaydi",
-        );
       if (existing.status === "cancelled")
         return ApiResponse.conflict(
           res,
           "Bekor qilingan shartnomani o‘zgartirib bo‘lmaydi. Yangi shartnoma tuzing",
         );
-      if (payload.status === "completed")
-        return ApiResponse.badRequest(
-          res,
-          "Shartnoma faqat tugash sanasi kelganda avtomatik yakunlanadi. Muddatidan oldin faqat bekor qilish mumkin",
-        );
+      if (payload.status !== "cancelled")
+        payload.status = new Date(payload.endDate) < tashkentDayStart(new Date()) ? "completed" : "active";
       if (!mongoose.isValidObjectId(payload.student))
         return ApiResponse.badRequest(res, "Talabani to‘g‘ri tanlang");
       if (await this.validateRoom(payload, res, req.params.id))
@@ -411,15 +423,6 @@ class StudentContractController {
         return ApiResponse.conflict(
           res,
           "To‘lov qilingan shartnomaning boshlanish sanasi yoki turini o‘zgartirib bo‘lmaydi",
-        );
-      if (
-        paidExists &&
-        endDateChanged &&
-        new Date(payload.endDate) < new Date(existing.endDate)
-      )
-        return ApiResponse.conflict(
-          res,
-          "To‘lov qilingan shartnomaning tugash sanasini faqat uzaytirish mumkin",
         );
       if (paidExists && financialChanged) {
         const nextContract = {

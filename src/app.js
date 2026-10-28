@@ -27,6 +27,7 @@ import { identifyEmployee } from './middleware/auth.js'
 import { auditMutation } from './middleware/audit.js'
 import { auditLogRouter } from './routes/auditLogRoutes.js'
 import { paymentStatisticsRouter } from './routes/paymentStatisticsRoutes.js'
+import { surveyRouter } from './routes/surveyRoutes.js'
 
 export const app = express()
 app.set('trust proxy', 1)
@@ -63,6 +64,7 @@ app.use('/api/reports', reportRouter)
 app.use('/api/notifications', notificationRouter)
 app.use('/api/cash-sessions', cashSessionRouter)
 app.use('/api/audit-logs', auditLogRouter)
+app.use('/api/surveys', surveyRouter)
 
 app.use((_req, res) => ApiResponse.notFound(res, 'API manzili topilmadi'))
 app.use((error, _req, res, _next) => {

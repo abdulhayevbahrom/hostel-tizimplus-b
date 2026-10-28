@@ -10,6 +10,7 @@ import { Room } from './models/Room.js'
 import { DebtorDeadline } from './models/DebtorDeadline.js'
 import { AuditLog } from './models/AuditLog.js'
 import { allowedOrigins, isAllowedOrigin } from './config/origins.js'
+import { registerTelegramWebhook } from './utils/telegram.js'
 
 const port = Number(process.env.PORT || 5000)
 const httpServer = createServer(app)
@@ -30,6 +31,7 @@ try {
   await syncContractStatuses()
   await createContractExpiryNotification(io)
   await createDebtorDeadlineNotification(io)
+  await registerTelegramWebhook().catch((error) => console.error(`Telegram webhook ulanmagan: ${error.message}`))
   scheduleDailyContractSync(io)
   httpServer.listen(port, () => console.log(`API va WebSocket http://localhost:${port} manzilida ishlamoqda`))
 } catch (error) {
