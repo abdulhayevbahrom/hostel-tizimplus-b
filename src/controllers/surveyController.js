@@ -3,6 +3,8 @@ import { Student } from '../models/Student.js'
 import { Survey } from '../models/Survey.js'
 import { SurveyResponse } from '../models/SurveyResponse.js'
 import { TelegramSurveySession } from '../models/TelegramSurveySession.js'
+import { TelegramStudentLink } from '../models/TelegramStudentLink.js'
+import { Complaint } from '../models/Complaint.js'
 import { ApiResponse } from '../utils/response.js'
 import { sendTelegramMessage, telegramCall } from '../utils/telegram.js'
 
@@ -10,6 +12,7 @@ const cleanPhone = (value = '') => String(value).replace(/\D/g, '').slice(-9)
 const validId = (value) => mongoose.isValidObjectId(value)
 const questionTypeLabels = { choice: 'Variantli', rating: '1–5 baholash', yes_no: 'Ha / yo‘q', text: 'Erkin matn' }
 const contactKeyboard = { keyboard: [[{ text: '📱 Telefon raqamni yuborish', request_contact: true }]], resize_keyboard: true, one_time_keyboard: true, input_field_placeholder: 'Yoki raqamni yozing: 901234567' }
+const mainKeyboard = { keyboard: [[{ text: '📋 So‘rovnomani to‘ldirish' }], [{ text: '📣 Shikoyat yozish' }]], resize_keyboard: true, is_persistent: true }
 
 function normalizeQuestions(questions) {
   if (!Array.isArray(questions) || !questions.length) throw new Error('Kamida bitta savol kiriting')
@@ -62,9 +65,26 @@ class SurveyController {
       if (!chatId) return ApiResponse.ok(res, { received: true })
 
       if (callback) await telegramCall('answerCallbackQuery', { callback_query_id: callback.id }).catch(() => null)
+      let link = await TelegramStudentLink.findOne({ chatId }).populate('student', 'fullName phone')
       if (message?.text === '/start') {
         await TelegramSurveySession.deleteOne({ chatId })
-        await sendTelegramMessage(chatId, 'Assalomu alaykum! Sizni talabalar bazasidan aniqlash uchun telefon raqamingizni tugma orqali yuboring yoki 901234567 ko‘rinishida yozing.', contactKeyboard)
+        if (link) {
+          link.mode = 'idle'; await link.save()
+          await sendTelegramMessage(chatId, `Assalomu alaykum, ${link.student.fullName}! Kerakli bo‘limni tanlang.`, mainKeyboard)
+        } else await sendTelegramMessage(chatId, 'Assalomu alaykum! Sizni talabalar bazasidan aniqlash uchun telefon raqamingizni tugma orqali yuboring yoki 901234567 ko‘rinishida yozing.', contactKeyboard)
+        return ApiResponse.ok(res, { received: true })
+      }
+
+      if (link?.mode === 'awaiting_complaint' && message?.text && !message.text.startsWith('/')) {
+        const complaintText = message.text.trim()
+        if (complaintText.length < 5) {
+          await sendTelegramMessage(chatId, 'Shikoyat yoki muammoni batafsilroq yozing. Kamida 5 ta belgi bo‘lishi kerak.')
+          return ApiResponse.ok(res, { received: true })
+        }
+        const complaint = await Complaint.create({ student: link.student._id, telegramChatId: chatId, text: complaintText })
+        link.mode = 'idle'; await link.save()
+        req.app.get('io')?.emit('complaints:changed', { id: complaint.id })
+        await sendTelegramMessage(chatId, `Shikoyatingiz qabul qilindi. Murojaat raqami: #${complaint.id.slice(-6).toUpperCase()}. Xodimlar uni ko‘rib chiqadi.`, mainKeyboard)
         return ApiResponse.ok(res, { received: true })
       }
 
@@ -81,31 +101,40 @@ class SurveyController {
           await sendTelegramMessage(chatId, 'Bu telefon raqam talabalar bazasida topilmadi. Ma’muriyatga murojaat qiling.', contactKeyboard)
           return ApiResponse.ok(res, { received: true })
         }
-        const survey = await Survey.findOne({ status: 'active' }).sort({ activatedAt: -1 })
-        if (!survey) {
-          await sendTelegramMessage(chatId, `${student.fullName}, hozircha faol so‘rovnoma yo‘q.`, { remove_keyboard: true })
-          return ApiResponse.ok(res, { received: true })
-        }
-        if (await SurveyResponse.exists({ survey: survey._id, student: student._id })) {
-          await sendTelegramMessage(chatId, `${student.fullName}, siz bu so‘rovnomaga avval javob bergansiz. Rahmat!`, { remove_keyboard: true })
-          return ApiResponse.ok(res, { received: true })
-        }
-        await TelegramSurveySession.findOneAndUpdate({ chatId }, { telegramUserId, student: student._id, survey: survey._id, questionIndex: 0, answers: [], lastUpdateId: update.update_id || 0 }, { upsert: true, new: true })
-        await sendTelegramMessage(chatId, `Assalomu alaykum, ${student.fullName}!\n\n${survey.title}${survey.description ? `\n${survey.description}` : ''}`, { remove_keyboard: true })
-        await askTelegramQuestion(chatId, survey, 0)
+        link = await TelegramStudentLink.findOneAndUpdate({ chatId }, { telegramUserId, student: student._id, mode: 'idle' }, { upsert: true, new: true }).populate('student', 'fullName phone')
+        await sendTelegramMessage(chatId, `Assalomu alaykum, ${student.fullName}! Kerakli bo‘limni tanlang.`, mainKeyboard)
+        return ApiResponse.ok(res, { received: true })
+      }
+
+      if (!link) {
+        await sendTelegramMessage(chatId, 'Telefon raqamingizni 901234567 yoki +998901234567 ko‘rinishida yozing.', contactKeyboard)
+        return ApiResponse.ok(res, { received: true })
+      }
+
+      if (message?.text === '📣 Shikoyat yozish') {
+        await TelegramSurveySession.deleteOne({ chatId })
+        link.mode = 'awaiting_complaint'; await link.save()
+        await sendTelegramMessage(chatId, 'Shikoyat yoki muammoni bitta xabarda batafsil yozing. Bekor qilish uchun /start ni bosing.', { remove_keyboard: true })
+        return ApiResponse.ok(res, { received: true })
+      }
+
+      if (message?.text === '📋 So‘rovnomani to‘ldirish') {
+        const activeSurvey = await Survey.findOne({ status: 'active' }).sort({ activatedAt: -1 })
+        if (!activeSurvey) { await sendTelegramMessage(chatId, 'Hozircha faol so‘rovnoma yo‘q.', mainKeyboard); return ApiResponse.ok(res, { received: true }) }
+        if (await SurveyResponse.exists({ survey: activeSurvey._id, student: link.student._id })) { await sendTelegramMessage(chatId, 'Siz bu so‘rovnomaga avval javob bergansiz. Rahmat!', mainKeyboard); return ApiResponse.ok(res, { received: true }) }
+        await TelegramSurveySession.findOneAndUpdate({ chatId }, { telegramUserId, student: link.student._id, survey: activeSurvey._id, questionIndex: 0, answers: [], lastUpdateId: update.update_id || 0 }, { upsert: true, new: true })
+        await sendTelegramMessage(chatId, `${activeSurvey.title}${activeSurvey.description ? `\n${activeSurvey.description}` : ''}`, { remove_keyboard: true })
+        await askTelegramQuestion(chatId, activeSurvey, 0)
         return ApiResponse.ok(res, { received: true })
       }
 
       const session = await TelegramSurveySession.findOne({ chatId })
-      if (!session) {
-        await sendTelegramMessage(chatId, 'Telefon raqamingizni 901234567 yoki +998901234567 ko‘rinishida yozing. So‘rovnomani qayta boshlash uchun /start ni bosing.', contactKeyboard)
-        return ApiResponse.ok(res, { received: true })
-      }
+      if (!session) { await sendTelegramMessage(chatId, 'Kerakli bo‘limni tanlang.', mainKeyboard); return ApiResponse.ok(res, { received: true }) }
       if (update.update_id && session.lastUpdateId >= update.update_id) return ApiResponse.ok(res, { received: true, duplicate: true })
       const survey = await Survey.findOne({ _id: session.survey, status: 'active' })
       if (!survey) {
         await TelegramSurveySession.deleteOne({ _id: session._id })
-        await sendTelegramMessage(chatId, 'Bu so‘rovnoma yopilgan. Yangi so‘rovnoma uchun /start ni bosing.')
+        await sendTelegramMessage(chatId, 'Bu so‘rovnoma yopilgan.', mainKeyboard)
         return ApiResponse.ok(res, { received: true })
       }
       const question = survey.questions[session.questionIndex]
@@ -131,7 +160,7 @@ class SurveyController {
         await SurveyResponse.findOneAndUpdate({ survey: survey._id, student: session.student }, { answers: session.answers, telegramChatId: chatId, completedAt: new Date() }, { upsert: true, new: true, runValidators: true })
         await TelegramSurveySession.deleteOne({ _id: session._id })
         req.app.get('io')?.emit('surveys:changed', { id: survey.id })
-        await sendTelegramMessage(chatId, 'Barcha javoblaringiz saqlandi. Fikringiz uchun rahmat! ✅', { remove_keyboard: true })
+        await sendTelegramMessage(chatId, 'Barcha javoblaringiz saqlandi. Fikringiz uchun rahmat! ✅', mainKeyboard)
       }
       return ApiResponse.ok(res, { received: true })
     } catch (error) { return next(error) }
