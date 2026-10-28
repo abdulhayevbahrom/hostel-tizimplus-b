@@ -9,7 +9,7 @@ import { sendTelegramMessage, telegramCall } from '../utils/telegram.js'
 const cleanPhone = (value = '') => String(value).replace(/\D/g, '').slice(-9)
 const validId = (value) => mongoose.isValidObjectId(value)
 const questionTypeLabels = { choice: 'Variantli', rating: '1–5 baholash', yes_no: 'Ha / yo‘q', text: 'Erkin matn' }
-const contactKeyboard = { keyboard: [[{ text: '📱 Telefon raqamni yuborish', request_contact: true }]], resize_keyboard: true, one_time_keyboard: true }
+const contactKeyboard = { keyboard: [[{ text: '📱 Telefon raqamni yuborish', request_contact: true }]], resize_keyboard: true, one_time_keyboard: true, input_field_placeholder: 'Yoki raqamni yozing: 901234567' }
 
 function normalizeQuestions(questions) {
   if (!Array.isArray(questions) || !questions.length) throw new Error('Kamida bitta savol kiriting')
@@ -64,16 +64,18 @@ class SurveyController {
       if (callback) await telegramCall('answerCallbackQuery', { callback_query_id: callback.id }).catch(() => null)
       if (message?.text === '/start') {
         await TelegramSurveySession.deleteOne({ chatId })
-        await sendTelegramMessage(chatId, 'Assalomu alaykum! Sizni talabalar bazasidan aniqlash uchun telefon raqamingizni yuboring.', contactKeyboard)
+        await sendTelegramMessage(chatId, 'Assalomu alaykum! Sizni talabalar bazasidan aniqlash uchun telefon raqamingizni tugma orqali yuboring yoki 901234567 ko‘rinishida yozing.', contactKeyboard)
         return ApiResponse.ok(res, { received: true })
       }
 
-      if (message?.contact) {
-        if (message.contact.user_id && String(message.contact.user_id) !== telegramUserId) {
+      const typedPhoneDigits = String(message?.text || '').replace(/\D/g, '')
+      const typedPhone = /^(998)?\d{9}$/.test(typedPhoneDigits) ? cleanPhone(typedPhoneDigits) : ''
+      if (message?.contact || typedPhone) {
+        if (message.contact?.user_id && String(message.contact.user_id) !== telegramUserId) {
           await sendTelegramMessage(chatId, 'Iltimos, o‘zingizning telefon raqamingizni yuboring.', contactKeyboard)
           return ApiResponse.ok(res, { received: true })
         }
-        const phone = cleanPhone(message.contact.phone_number)
+        const phone = typedPhone || cleanPhone(message.contact.phone_number)
         const student = await Student.findOne({ phone }).select('fullName phone')
         if (!student) {
           await sendTelegramMessage(chatId, 'Bu telefon raqam talabalar bazasida topilmadi. Ma’muriyatga murojaat qiling.', contactKeyboard)
@@ -96,7 +98,7 @@ class SurveyController {
 
       const session = await TelegramSurveySession.findOne({ chatId })
       if (!session) {
-        await sendTelegramMessage(chatId, 'So‘rovnomani boshlash uchun /start buyrug‘ini bosing.')
+        await sendTelegramMessage(chatId, 'Telefon raqamingizni 901234567 yoki +998901234567 ko‘rinishida yozing. So‘rovnomani qayta boshlash uchun /start ni bosing.', contactKeyboard)
         return ApiResponse.ok(res, { received: true })
       }
       if (update.update_id && session.lastUpdateId >= update.update_id) return ApiResponse.ok(res, { received: true, duplicate: true })
