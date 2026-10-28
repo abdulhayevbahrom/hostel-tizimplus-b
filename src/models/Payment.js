@@ -27,7 +27,7 @@ const paymentSchema = new mongoose.Schema({
   method: { type: String, enum: ['cash', 'card', 'bank', 'online', 'mixed'], required: true, index: true },
   fundHolder: { type: String, enum: ['cashier', 'organization', 'mixed'], default: 'organization', index: true },
   paymentParts: { type: [paymentPartSchema], default: undefined },
-  paymentDate: { type: Date, required: true, index: true },
+  paymentDate: { type: Date, index: true },
   note: { type: String, trim: true, maxlength: 500, default: '' },
   allocations: { type: [allocationSchema], default: [] },
   receivedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee', default: null, index: true },

@@ -325,16 +325,30 @@ class PaymentController {
         const fundHolder = paymentFundHolderValue(paymentParts)
         const allocation = payment.allocations[0]
         const isDeposit = payment.paymentPurpose === 'deposit'
-        const installment = isDeposit ? null : await ContractInstallment.findById(allocation?.installment).session(session)
+        const oldInstallment = isDeposit ? null : await ContractInstallment.findById(allocation?.installment).session(session)
+        const requestedInstallmentId = req.body.installment || allocation?.installment
+        if (!isDeposit && !mongoose.isValidObjectId(requestedInstallmentId)) throw Object.assign(new Error('To‘lov oyini tanlang'), { paymentValidation: true })
+        const installment = isDeposit ? null : await ContractInstallment.findOne({ _id: requestedInstallmentId, contract: payment.contract }).session(session)
         if (!isDeposit && !installment) throw Object.assign(new Error('To‘lov davri topilmadi'), { paymentValidation: true })
+        if (!isDeposit && !oldInstallment) throw Object.assign(new Error('Avvalgi to‘lov davri topilmadi'), { paymentValidation: true })
+        const installmentChanged = !isDeposit && oldInstallment.id !== installment.id
         let available
         if (isDeposit) {
           const settings = await GeneralSetting.findOne({ key: 'general' }).session(session).lean()
           const [depositRow] = await Payment.aggregate([{ $match: { _id: { $ne: payment._id }, student: payment.student, paymentPurpose: 'deposit', status: { $ne: 'cancelled' }, cancelledAt: null } }, { $group: { _id: null, paid: { $sum: '$amount' } } }]).session(session)
           available = Math.max(0, Number(settings?.depositAmount || 0) - Number(depositRow?.paid || 0))
-        } else available = Math.max(0, installment.amount - installment.paidAmount) + allocation.amount
+        } else available = Math.max(0, installment.amount - installment.paidAmount) + (installmentChanged ? 0 : allocation.amount)
         if (amount > available) throw Object.assign(new Error(`Maksimal to‘lov: ${available.toLocaleString('uz-UZ')} so‘m`), { paymentValidation: true })
-        if (installment) { installment.paidAmount = Math.max(0, installment.paidAmount - allocation.amount) + amount; installment.status = installment.paidAmount <= 0 ? 'unpaid' : installment.paidAmount >= installment.amount ? 'paid' : 'partial'; await installment.save({ session }) }
+        if (installment) {
+          if (installmentChanged) {
+            oldInstallment.paidAmount = Math.max(0, oldInstallment.paidAmount - allocation.amount)
+            oldInstallment.status = oldInstallment.paidAmount <= 0 ? 'unpaid' : oldInstallment.paidAmount >= oldInstallment.amount ? 'paid' : 'partial'
+            await oldInstallment.save({ session })
+            installment.paidAmount += amount
+          } else installment.paidAmount = Math.max(0, installment.paidAmount - allocation.amount) + amount
+          installment.status = installment.paidAmount <= 0 ? 'unpaid' : installment.paidAmount >= installment.amount ? 'paid' : 'partial'
+          await installment.save({ session })
+        }
         payment.fundHolder = fundHolder
         payment.paymentParts = paymentParts
         if (!paymentParts.some((part) => part.fundHolder === 'cashier')) payment.cashSession = null
@@ -363,6 +377,9 @@ class PaymentController {
         payment = await Payment.findById(req.params.id).session(session)
         if (!payment) throw Object.assign(new Error('To‘lov topilmadi'), { status: 404 })
         if (payment.status === 'cancelled' || payment.cancelledAt) throw Object.assign(new Error('To‘lov avval bekor qilingan'), { paymentValidation: true })
+        // Legacy payments predate the separate paymentDate field. Preserve
+        // their original recorded date when a cancellation saves the row.
+        payment.paymentDate ||= payment.createdAt
         before = snapshot(payment)
         for (const allocation of payment.allocations) {
           const installment = await ContractInstallment.findById(allocation.installment).session(session)
