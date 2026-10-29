@@ -12,7 +12,21 @@ const cleanPhone = (value = '') => String(value).replace(/\D/g, '').slice(-9)
 const validId = (value) => mongoose.isValidObjectId(value)
 const questionTypeLabels = { choice: 'Variantli', rating: '1–5 baholash', yes_no: 'Ha / yo‘q', text: 'Erkin matn' }
 const contactKeyboard = { keyboard: [[{ text: '📱 Telefon raqamni yuborish', request_contact: true }]], resize_keyboard: true, one_time_keyboard: true, input_field_placeholder: 'Yoki raqamni yozing: 901234567' }
-const mainKeyboard = { keyboard: [[{ text: '📋 So‘rovnomani to‘ldirish' }], [{ text: '📣 Shikoyat yozish' }]], resize_keyboard: true, is_persistent: true }
+const mainKeyboard = { keyboard: [[{ text: '📋 So‘rovnomada qatnashish' }], [{ text: '📝 Murojaat yuborish' }]], resize_keyboard: true, is_persistent: true, input_field_placeholder: 'Kerakli bo‘limni tanlang' }
+
+function normalizeFollowUp(followUp, questionNumber, optionLabel) {
+  if (!followUp?.enabled) return null
+  const text = String(followUp.text || '').trim()
+  if (!text) throw new Error(`${questionNumber}-savoldagi “${optionLabel}” varianti uchun qo‘shimcha savol matnini kiriting`)
+  const type = ['choice', 'rating', 'yes_no', 'text'].includes(followUp.type) ? followUp.type : 'text'
+  let options = []
+  if (type === 'choice') {
+    options = (followUp.options || []).map((option, index) => ({ label: String(option.label || '').trim(), value: String(option.value || `option_${index + 1}`).trim(), sentiment: option.sentiment || 'neutral' })).filter((option) => option.label)
+    if (options.length < 2) throw new Error(`${questionNumber}-savoldagi qo‘shimcha savol uchun kamida 2 ta variant kiriting`)
+  }
+  if (type === 'yes_no') options = [{ label: 'Ha', value: 'yes', sentiment: 'positive' }, { label: 'Yo‘q', value: 'no', sentiment: 'negative' }]
+  return { enabled: true, text, type, required: followUp.required !== false, options }
+}
 
 function normalizeQuestions(questions) {
   if (!Array.isArray(questions) || !questions.length) throw new Error('Kamida bitta savol kiriting')
@@ -26,10 +40,14 @@ function normalizeQuestions(questions) {
         label: String(option.label || '').trim(),
         value: String(option.value || `option_${optionIndex + 1}`).trim(),
         sentiment: ['positive', 'neutral', 'negative'].includes(option.sentiment) ? option.sentiment : 'neutral',
+        followUp: normalizeFollowUp(option.followUp, index + 1, String(option.label || optionIndex + 1)),
       })).filter((option) => option.label)
       if (options.length < 2) throw new Error(`${index + 1}-savol uchun kamida 2 ta variant kiriting`)
     }
-    if (type === 'yes_no') options = [{ label: 'Ha', value: 'yes', sentiment: 'positive' }, { label: 'Yo‘q', value: 'no', sentiment: 'negative' }]
+    if (type === 'yes_no') {
+      const supplied = new Map((question.options || []).map((option) => [option.value, option]))
+      options = [{ label: 'Ha', value: 'yes', sentiment: 'positive' }, { label: 'Yo‘q', value: 'no', sentiment: 'negative' }].map((option) => ({ ...option, followUp: normalizeFollowUp(supplied.get(option.value)?.followUp, index + 1, option.label) }))
+    }
     return { text, type, required: question.required !== false, options }
   })
 }
@@ -40,15 +58,20 @@ function answerSentiment(question, value) {
   return question.options.find((option) => option.value === String(value))?.sentiment || 'neutral'
 }
 
-function questionKeyboard(question, questionIndex) {
-  if (question.type === 'text') return { remove_keyboard: true }
-  if (question.type === 'rating') return { inline_keyboard: [[1, 2, 3, 4, 5].map((value) => ({ text: String(value), callback_data: `a:${questionIndex}:${value - 1}` }))] }
-  return { inline_keyboard: question.options.map((option, optionIndex) => [{ text: option.label, callback_data: `a:${questionIndex}:${optionIndex}` }]) }
+function questionKeyboard(question, questionIndex, prefix = 'a') {
+  const skipRow = question.required === false ? [[{ text: 'O‘tkazib yuborish', callback_data: `s:${questionIndex}` }]] : []
+  if (question.type === 'text') return question.required === false ? { inline_keyboard: skipRow } : { remove_keyboard: true }
+  if (question.type === 'rating') return { inline_keyboard: [[1, 2, 3, 4, 5].map((value) => ({ text: `${value} ⭐`, callback_data: `${prefix}:${questionIndex}:${value - 1}` })), ...skipRow] }
+  return { inline_keyboard: [...question.options.map((option, optionIndex) => [{ text: option.label, callback_data: `${prefix}:${questionIndex}:${optionIndex}` }]), ...skipRow] }
 }
 
 async function askTelegramQuestion(chatId, survey, index) {
   const question = survey.questions[index]
-  return sendTelegramMessage(chatId, `${index + 1}/${survey.questions.length}. ${question.text}`, questionKeyboard(question, index))
+  return sendTelegramMessage(chatId, `Savol ${index + 1}/${survey.questions.length}\n\n${question.text}`, questionKeyboard(question, index))
+}
+
+async function askTelegramFollowUp(chatId, followUp, questionIndex) {
+  return sendTelegramMessage(chatId, `Fikringizni yaxshiroq tushunishimiz uchun:\n\n${followUp.text}`, questionKeyboard(followUp, questionIndex, 'f'))
 }
 
 class SurveyController {
@@ -70,21 +93,23 @@ class SurveyController {
         await TelegramSurveySession.deleteOne({ chatId })
         if (link) {
           link.mode = 'idle'; await link.save()
-          await sendTelegramMessage(chatId, `Assalomu alaykum, ${link.student.fullName}! Kerakli bo‘limni tanlang.`, mainKeyboard)
-        } else await sendTelegramMessage(chatId, 'Assalomu alaykum! Sizni talabalar bazasidan aniqlash uchun telefon raqamingizni tugma orqali yuboring yoki 901234567 ko‘rinishida yozing.', contactKeyboard)
+          await sendTelegramMessage(chatId, `Assalomu alaykum, ${link.student.fullName}! Sizga qanday yordam bera olamiz? Iltimos, kerakli bo‘limni tanlang.`, mainKeyboard)
+        } else await sendTelegramMessage(chatId, 'Assalomu alaykum! Xush kelibsiz. Sizni talabalar bazasidan aniqlashimiz uchun telefon raqamingizni tugma orqali yuboring yoki 901234567 ko‘rinishida yozing.', contactKeyboard)
         return ApiResponse.ok(res, { received: true })
       }
 
       if (link?.mode === 'awaiting_complaint' && message?.text && !message.text.startsWith('/')) {
         const complaintText = message.text.trim()
         if (complaintText.length < 5) {
-          await sendTelegramMessage(chatId, 'Shikoyat yoki muammoni batafsilroq yozing. Kamida 5 ta belgi bo‘lishi kerak.')
+          await sendTelegramMessage(chatId, 'Iltimos, murojaat yoki muammoingizni biroz batafsilroq yozib yuboring.')
           return ApiResponse.ok(res, { received: true })
         }
         const complaint = await Complaint.create({ student: link.student._id, telegramChatId: chatId, text: complaintText })
         link.mode = 'idle'; await link.save()
         req.app.get('io')?.emit('complaints:changed', { id: complaint.id })
-        await sendTelegramMessage(chatId, `Shikoyatingiz qabul qilindi. Murojaat raqami: #${complaint.id.slice(-6).toUpperCase()}. Xodimlar uni ko‘rib chiqadi.`, mainKeyboard)
+        await sendTelegramMessage(chatId, `Hurmatli talaba, murojaatingiz qabul qilindi. Murojaat raqami: #${complaint.id.slice(-6).toUpperCase()}.
+
+Mas’ul xodimlar murojaatingizni ko‘rib chiqadi. Ishonchingiz uchun rahmat!`, mainKeyboard)
         return ApiResponse.ok(res, { received: true })
       }
 
@@ -92,66 +117,96 @@ class SurveyController {
       const typedPhone = /^(998)?\d{9}$/.test(typedPhoneDigits) ? cleanPhone(typedPhoneDigits) : ''
       if (message?.contact || typedPhone) {
         if (message.contact?.user_id && String(message.contact.user_id) !== telegramUserId) {
-          await sendTelegramMessage(chatId, 'Iltimos, o‘zingizning telefon raqamingizni yuboring.', contactKeyboard)
+          await sendTelegramMessage(chatId, 'Iltimos, xavfsizlik nuqtayi nazaridan faqat o‘zingizga tegishli telefon raqamini yuboring.', contactKeyboard)
           return ApiResponse.ok(res, { received: true })
         }
         const phone = typedPhone || cleanPhone(message.contact.phone_number)
         const student = await Student.findOne({ phone }).select('fullName phone')
         if (!student) {
-          await sendTelegramMessage(chatId, 'Bu telefon raqam talabalar bazasida topilmadi. Ma’muriyatga murojaat qiling.', contactKeyboard)
+          await sendTelegramMessage(chatId, 'Kechirasiz, ushbu telefon raqami talabalar bazasida topilmadi. Iltimos, raqamni tekshirib qayta yuboring yoki ma’muriyatga murojaat qiling.', contactKeyboard)
           return ApiResponse.ok(res, { received: true })
         }
         link = await TelegramStudentLink.findOneAndUpdate({ chatId }, { telegramUserId, student: student._id, mode: 'idle' }, { upsert: true, new: true }).populate('student', 'fullName phone')
-        await sendTelegramMessage(chatId, `Assalomu alaykum, ${student.fullName}! Kerakli bo‘limni tanlang.`, mainKeyboard)
+        await sendTelegramMessage(chatId, `Assalomu alaykum, ${student.fullName}! Sizga qanday yordam bera olamiz? Iltimos, kerakli bo‘limni tanlang.`, mainKeyboard)
         return ApiResponse.ok(res, { received: true })
       }
 
       if (!link) {
-        await sendTelegramMessage(chatId, 'Telefon raqamingizni 901234567 yoki +998901234567 ko‘rinishida yozing.', contactKeyboard)
+        await sendTelegramMessage(chatId, 'Iltimos, telefon raqamingizni 901234567 yoki +998901234567 ko‘rinishida yuboring.', contactKeyboard)
         return ApiResponse.ok(res, { received: true })
       }
 
-      if (message?.text === '📣 Shikoyat yozish') {
+      if (['📝 Murojaat yuborish', '📣 Shikoyat yozish'].includes(message?.text)) {
         await TelegramSurveySession.deleteOne({ chatId })
         link.mode = 'awaiting_complaint'; await link.save()
-        await sendTelegramMessage(chatId, 'Shikoyat yoki muammoni bitta xabarda batafsil yozing. Bekor qilish uchun /start ni bosing.', { remove_keyboard: true })
+        await sendTelegramMessage(chatId, 'Hurmatli talaba, murojaat yoki muammoingizni bitta xabarda batafsil yozib yuboring. Bekor qilish uchun /start buyrug‘ini bosing.', { remove_keyboard: true })
         return ApiResponse.ok(res, { received: true })
       }
 
-      if (message?.text === '📋 So‘rovnomani to‘ldirish') {
+      if (['📋 So‘rovnomada qatnashish', '📋 So‘rovnomani to‘ldirish'].includes(message?.text)) {
         const activeSurvey = await Survey.findOne({ status: 'active' }).sort({ activatedAt: -1 })
-        if (!activeSurvey) { await sendTelegramMessage(chatId, 'Hozircha faol so‘rovnoma yo‘q.', mainKeyboard); return ApiResponse.ok(res, { received: true }) }
-        if (await SurveyResponse.exists({ survey: activeSurvey._id, student: link.student._id })) { await sendTelegramMessage(chatId, 'Siz bu so‘rovnomaga avval javob bergansiz. Rahmat!', mainKeyboard); return ApiResponse.ok(res, { received: true }) }
-        await TelegramSurveySession.findOneAndUpdate({ chatId }, { telegramUserId, student: link.student._id, survey: activeSurvey._id, questionIndex: 0, answers: [], lastUpdateId: update.update_id || 0 }, { upsert: true, new: true })
-        await sendTelegramMessage(chatId, `${activeSurvey.title}${activeSurvey.description ? `\n${activeSurvey.description}` : ''}`, { remove_keyboard: true })
+        if (!activeSurvey) { await sendTelegramMessage(chatId, 'Hurmatli talaba, hozircha faol so‘rovnoma mavjud emas. Keyinroq qayta urinib ko‘ring.', mainKeyboard); return ApiResponse.ok(res, { received: true }) }
+        if (await SurveyResponse.exists({ survey: activeSurvey._id, student: link.student._id })) { await sendTelegramMessage(chatId, 'Siz ushbu so‘rovnomada avval qatnashgansiz. Bildirgan fikringiz uchun rahmat!', mainKeyboard); return ApiResponse.ok(res, { received: true }) }
+        await TelegramSurveySession.findOneAndUpdate({ chatId }, { telegramUserId, student: link.student._id, survey: activeSurvey._id, questionIndex: 0, awaitingFollowUp: false, selectedOptionIndex: null, answers: [], lastUpdateId: update.update_id || 0 }, { upsert: true, new: true })
+        await sendTelegramMessage(chatId, `So‘rovnomada qatnashishga rozilik bildirganingiz uchun rahmat.\n\n${activeSurvey.title}${activeSurvey.description ? `\n${activeSurvey.description}` : ''}`, { remove_keyboard: true })
         await askTelegramQuestion(chatId, activeSurvey, 0)
         return ApiResponse.ok(res, { received: true })
       }
 
       const session = await TelegramSurveySession.findOne({ chatId })
-      if (!session) { await sendTelegramMessage(chatId, 'Kerakli bo‘limni tanlang.', mainKeyboard); return ApiResponse.ok(res, { received: true }) }
+      if (!session) { await sendTelegramMessage(chatId, 'Iltimos, davom etish uchun kerakli bo‘limni tanlang.', mainKeyboard); return ApiResponse.ok(res, { received: true }) }
       if (update.update_id && session.lastUpdateId >= update.update_id) return ApiResponse.ok(res, { received: true, duplicate: true })
       const survey = await Survey.findOne({ _id: session.survey, status: 'active' })
       if (!survey) {
         await TelegramSurveySession.deleteOne({ _id: session._id })
-        await sendTelegramMessage(chatId, 'Bu so‘rovnoma yopilgan.', mainKeyboard)
+        await sendTelegramMessage(chatId, 'Hurmatli talaba, ushbu so‘rovnoma yakunlangan. Qiziqish bildirganingiz uchun rahmat!', mainKeyboard)
         return ApiResponse.ok(res, { received: true })
       }
       const question = survey.questions[session.questionIndex]
       let value
-      if (callback?.data?.startsWith('a:')) {
-        const [, indexRaw, optionRaw] = callback.data.split(':')
-        if (Number(indexRaw) !== session.questionIndex || question.type === 'text') return ApiResponse.ok(res, { received: true })
-        const optionIndex = Number(optionRaw)
-        value = question.type === 'rating' ? optionIndex + 1 : question.options[optionIndex]?.value
-      } else if (message?.text && question.type === 'text') value = message.text.trim().slice(0, 2000)
-      else {
-        await askTelegramQuestion(chatId, survey, session.questionIndex)
-        return ApiResponse.ok(res, { received: true })
+      let optionIndex = null
+      let skipped = false
+      if (session.awaitingFollowUp) {
+        const followUp = question.options[session.selectedOptionIndex]?.followUp
+        if (!followUp?.enabled) {
+          session.awaitingFollowUp = false
+          session.selectedOptionIndex = null
+        }
+        else if (callback?.data === `s:${session.questionIndex}` && followUp.required === false) skipped = true
+        else if (callback?.data?.startsWith('f:')) {
+          const [, indexRaw, answerRaw] = callback.data.split(':')
+          if (Number(indexRaw) !== session.questionIndex || followUp.type === 'text') return ApiResponse.ok(res, { received: true })
+          const answerIndex = Number(answerRaw)
+          value = followUp.type === 'rating' ? answerIndex + 1 : followUp.options[answerIndex]?.value
+        } else if (message?.text && followUp.type === 'text') value = message.text.trim().slice(0, 2000)
+        else { await askTelegramFollowUp(chatId, followUp, session.questionIndex); return ApiResponse.ok(res, { received: true }) }
+        if (!skipped && (value === undefined || value === '')) return ApiResponse.ok(res, { received: true })
+        if (!skipped) session.answers = [...session.answers.filter((answer) => answer.questionId.toString() !== followUp._id.toString()), { questionId: followUp._id, value }]
+        session.awaitingFollowUp = false
+        session.selectedOptionIndex = null
+        session.questionIndex += 1
+      } else {
+        if (callback?.data === `s:${session.questionIndex}` && question.required === false) skipped = true
+        else if (callback?.data?.startsWith('a:')) {
+          const [, indexRaw, optionRaw] = callback.data.split(':')
+          if (Number(indexRaw) !== session.questionIndex || question.type === 'text') return ApiResponse.ok(res, { received: true })
+          optionIndex = Number(optionRaw)
+          value = question.type === 'rating' ? optionIndex + 1 : question.options[optionIndex]?.value
+        } else if (message?.text && question.type === 'text') value = message.text.trim().slice(0, 2000)
+        else { await askTelegramQuestion(chatId, survey, session.questionIndex); return ApiResponse.ok(res, { received: true }) }
+        if (!skipped && (value === undefined || value === '')) return ApiResponse.ok(res, { received: true })
+        if (!skipped) session.answers = [...session.answers.filter((answer) => answer.questionId.toString() !== question.id), { questionId: question._id, value }]
+        const followUp = optionIndex !== null ? question.options[optionIndex]?.followUp : null
+        if (followUp?.enabled) {
+          session.awaitingFollowUp = true
+          session.selectedOptionIndex = optionIndex
+          session.lastUpdateId = update.update_id || session.lastUpdateId
+          await session.save()
+          await askTelegramFollowUp(chatId, followUp, session.questionIndex)
+          return ApiResponse.ok(res, { received: true })
+        }
+        session.questionIndex += 1
       }
-      if (value === undefined || value === '') return ApiResponse.ok(res, { received: true })
-      session.answers = [...session.answers.filter((answer) => answer.questionId.toString() !== question.id), { questionId: question._id, value }]
-      session.questionIndex += 1
       session.lastUpdateId = update.update_id || session.lastUpdateId
       if (session.questionIndex < survey.questions.length) {
         await session.save()
@@ -160,7 +215,7 @@ class SurveyController {
         await SurveyResponse.findOneAndUpdate({ survey: survey._id, student: session.student }, { answers: session.answers, telegramChatId: chatId, completedAt: new Date() }, { upsert: true, new: true, runValidators: true })
         await TelegramSurveySession.deleteOne({ _id: session._id })
         req.app.get('io')?.emit('surveys:changed', { id: survey.id })
-        await sendTelegramMessage(chatId, 'Barcha javoblaringiz saqlandi. Fikringiz uchun rahmat! ✅', mainKeyboard)
+        await sendTelegramMessage(chatId, 'Hurmatli talaba, barcha javoblaringiz muvaffaqiyatli saqlandi. Qimmatli fikringiz va ajratgan vaqtingiz uchun tashakkur!', mainKeyboard)
       }
       return ApiResponse.ok(res, { received: true })
     } catch (error) { return next(error) }
@@ -238,8 +293,13 @@ class SurveyController {
       if (!survey) return ApiResponse.notFound(res, 'So‘rovnoma topilmadi')
       const responses = await SurveyResponse.find({ survey: survey._id }).populate('student', 'fullName phone').sort({ completedAt: -1 }).lean()
       const sentiment = { positive: 0, neutral: 0, negative: 0 }
-      const questionStats = survey.questions.map((question) => ({ questionId: question._id.toString(), text: question.text, type: question.type, typeLabel: questionTypeLabels[question.type], total: 0, values: {} }))
-      const questionMap = new Map(survey.questions.map((question, index) => [question._id.toString(), { question, index }]))
+      const allQuestions = []
+      survey.questions.forEach((question) => {
+        allQuestions.push(question)
+        question.options.forEach((option) => { if (option.followUp?.enabled) allQuestions.push(option.followUp) })
+      })
+      const questionStats = allQuestions.map((question) => ({ questionId: question._id.toString(), text: question.text, type: question.type, typeLabel: questionTypeLabels[question.type], total: 0, values: {} }))
+      const questionMap = new Map(allQuestions.map((question, index) => [question._id.toString(), { question, index }]))
       const rows = responses.map((response) => {
         let positive = 0; let negative = 0; let neutral = 0
         const answers = response.answers.map((answer) => {

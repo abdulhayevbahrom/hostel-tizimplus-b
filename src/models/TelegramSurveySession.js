@@ -11,6 +11,8 @@ const telegramSurveySessionSchema = new mongoose.Schema({
   student: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
   survey: { type: mongoose.Schema.Types.ObjectId, ref: 'Survey', required: true },
   questionIndex: { type: Number, min: 0, default: 0 },
+  awaitingFollowUp: { type: Boolean, default: false },
+  selectedOptionIndex: { type: Number, default: null },
   answers: { type: [telegramAnswerSchema], default: [] },
   lastUpdateId: { type: Number, default: 0 },
 }, { timestamps: true })

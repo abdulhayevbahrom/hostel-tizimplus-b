@@ -171,6 +171,7 @@ class PaymentController {
 
   advance = async (_req, res, next) => {
     try {
+      const currentPeriod = periodKeyInTashkent(new Date())
       const financialContractIds = await StudentContract.distinct('_id', { status: { $ne: 'cancelled' } })
       const payments = await Payment.find({ cancelledAt: null, contract: { $in: financialContractIds } })
         .populate(paymentPopulate)
@@ -179,6 +180,7 @@ class PaymentController {
       for (const payment of payments) {
         const installment = payment.allocations?.[0]?.installment
         if (!installment?.periodKey) continue
+        if (installment.periodKey < currentPeriod) continue
         const paymentPeriod = periodKeyInTashkent(effectivePaymentDate(payment))
         if (installment.periodKey <= paymentPeriod) continue
         const amount = payment.allocations?.[0]?.amount || payment.amount
@@ -211,7 +213,7 @@ class PaymentController {
           studentCount: studentIds.size,
           paymentCount: group.payments.length,
         }))
-        .sort((first, second) => second.periodKey.localeCompare(first.periodKey))
+        .sort((first, second) => first.periodKey.localeCompare(second.periodKey))
       return ApiResponse.ok(res, {
         periods,
         summary: {

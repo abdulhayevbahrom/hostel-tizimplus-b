@@ -1,9 +1,24 @@
 import mongoose from 'mongoose'
 
+const followUpOptionSchema = new mongoose.Schema({
+  label: { type: String, required: true, trim: true, maxlength: 120 },
+  value: { type: String, required: true, trim: true, maxlength: 80 },
+  sentiment: { type: String, enum: ['positive', 'neutral', 'negative'], default: 'neutral' },
+}, { _id: false })
+
+const followUpSchema = new mongoose.Schema({
+  enabled: { type: Boolean, default: false },
+  text: { type: String, trim: true, maxlength: 500, default: '' },
+  type: { type: String, enum: ['choice', 'rating', 'yes_no', 'text'], default: 'text' },
+  required: { type: Boolean, default: true },
+  options: { type: [followUpOptionSchema], default: [] },
+})
+
 const optionSchema = new mongoose.Schema({
   label: { type: String, required: true, trim: true, maxlength: 120 },
   value: { type: String, required: true, trim: true, maxlength: 80 },
   sentiment: { type: String, enum: ['positive', 'neutral', 'negative'], default: 'neutral' },
+  followUp: { type: followUpSchema, default: null },
 }, { _id: false })
 
 const questionSchema = new mongoose.Schema({
