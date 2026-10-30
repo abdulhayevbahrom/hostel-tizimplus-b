@@ -5,6 +5,8 @@ import { SurveyResponse } from '../models/SurveyResponse.js'
 import { TelegramSurveySession } from '../models/TelegramSurveySession.js'
 import { TelegramStudentLink } from '../models/TelegramStudentLink.js'
 import { Complaint } from '../models/Complaint.js'
+import { Notification } from '../models/Notification.js'
+import { StudentContract } from '../models/StudentContract.js'
 import { ApiResponse } from '../utils/response.js'
 import { sendTelegramMessage, telegramCall } from '../utils/telegram.js'
 
@@ -13,7 +15,7 @@ const validId = (value) => mongoose.isValidObjectId(value)
 const escapeTelegramHtml = (value = '') => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 const questionTypeLabels = { choice: 'Variantli', rating: '1–5 baholash', yes_no: 'Ha / yo‘q', text: 'Erkin matn' }
 const contactKeyboard = { keyboard: [[{ text: '📱 Telefon raqamni yuborish', request_contact: true }]], resize_keyboard: true, one_time_keyboard: true, input_field_placeholder: 'Yoki raqamni yozing: 901234567' }
-const mainKeyboard = { keyboard: [[{ text: '📋 So‘rovnomada qatnashish' }], [{ text: '📝 Murojaat yuborish' }]], resize_keyboard: true, one_time_keyboard: true, input_field_placeholder: 'Kerakli bo‘limni tanlang' }
+const mainKeyboard = { keyboard: [[{ text: '📋 So‘rovnomani boshlash' }], [{ text: '📝 Murojaat yuborish' }]], resize_keyboard: true, one_time_keyboard: true, input_field_placeholder: 'Kerakli bo‘limni tanlang' }
 
 function normalizeFollowUp(followUp, questionNumber, optionLabel) {
   if (!followUp?.enabled) return null
@@ -126,9 +128,21 @@ class SurveyController {
           await sendTelegramMessage(chatId, 'Iltimos, murojaat yoki muammoingizni biroz batafsilroq yozib yuboring.')
           return ApiResponse.ok(res, { received: true })
         }
-        const complaint = await Complaint.create({ student: link.student._id, telegramChatId: chatId, text: complaintText })
+        const contract = await StudentContract.findOne({ student: link.student._id, status: 'active' }).sort({ createdAt: -1 }).populate('room', 'roomNumber block floor')
+        const complaint = await Complaint.create({ student: link.student._id, room: contract?.room?._id || null, telegramChatId: chatId, text: complaintText })
+        const roomLabel = contract?.room ? `${contract.room.block ? `${contract.room.block}, ` : ''}${contract.room.floor}-qavat, ${contract.room.roomNumber}-xona` : 'Xona aniqlanmadi'
+        await Notification.create({
+          eventKey: `complaint:${complaint.id}`,
+          type: 'complaint',
+          title: 'Yangi talaba shikoyati',
+          message: `${link.student.fullName} · ${roomLabel}`,
+          count: 1,
+          targetPath: '/complaints',
+          targetRoles: ['employee', 'manager', 'owner', 'admin'],
+        }).catch((error) => console.error(`Shikoyat bildirishnomasi yaratilmadi: ${error.message}`))
         link.mode = 'idle'; await link.save()
         req.app.get('io')?.emit('complaints:changed', { id: complaint.id })
+        req.app.get('io')?.emit('notifications:changed', { action: 'created', type: 'complaint', id: complaint.id })
         await sendTelegramMessage(chatId, `Hurmatli talaba, murojaatingiz qabul qilindi. Murojaat raqami: #${complaint.id.slice(-6).toUpperCase()}.
 
 Mas’ul xodimlar murojaatingizni ko‘rib chiqadi. Ishonchingiz uchun rahmat!`, mainKeyboard)
@@ -165,7 +179,7 @@ Mas’ul xodimlar murojaatingizni ko‘rib chiqadi. Ishonchingiz uchun rahmat!`,
         return ApiResponse.ok(res, { received: true })
       }
 
-      if (['📋 So‘rovnomada qatnashish', '📋 So‘rovnomani to‘ldirish'].includes(message?.text)) {
+      if (['📋 So‘rovnomani boshlash', '📋 So‘rovnomada qatnashish', '📋 So‘rovnomani to‘ldirish'].includes(message?.text)) {
         const activeSurvey = await Survey.findOne({ status: 'active' }).sort({ activatedAt: -1 })
         if (!activeSurvey) { await sendTelegramMessage(chatId, 'Hurmatli talaba, hozircha faol so‘rovnoma mavjud emas. Keyinroq qayta urinib ko‘ring.', mainKeyboard); return ApiResponse.ok(res, { received: true }) }
         if (await SurveyResponse.exists({ survey: activeSurvey._id, student: link.student._id })) { await sendTelegramMessage(chatId, 'Siz ushbu so‘rovnomada avval qatnashgansiz. Bildirgan fikringiz uchun rahmat!', mainKeyboard); return ApiResponse.ok(res, { received: true }) }
@@ -259,6 +273,30 @@ Mas’ul xodimlar murojaatingizni ko‘rib chiqadi. Ishonchingiz uchun rahmat!`,
     } catch (error) { return next(error) }
   }
 
+  activationRecipients = async (_req, res, next) => {
+    try {
+      const contracts = await StudentContract.find({ status: 'active' })
+        .select('student room createdAt')
+        .populate('student', 'fullName phone')
+        .populate('room', 'roomNumber block floor')
+        .sort({ createdAt: -1 })
+      const latestByStudent = new Map()
+      contracts.forEach((contract) => {
+        if (contract.student && !latestByStudent.has(contract.student.id)) latestByStudent.set(contract.student.id, contract)
+      })
+      const studentIds = [...latestByStudent.keys()]
+      const linkedStudentIds = new Set((await TelegramStudentLink.find({ student: { $in: studentIds } }).select('student')).map((link) => link.student.toString()))
+      const students = [...latestByStudent.values()].map((contract) => ({
+        id: contract.student.id,
+        fullName: contract.student.fullName,
+        phone: contract.student.phone,
+        room: contract.room,
+        telegramLinked: linkedStudentIds.has(contract.student.id),
+      })).sort((a, b) => a.fullName.localeCompare(b.fullName, 'uz'))
+      return ApiResponse.ok(res, { students, linkedCount: linkedStudentIds.size, total: students.length })
+    } catch (error) { return next(error) }
+  }
+
   get = async (req, res, next) => {
     try {
       if (!validId(req.params.id)) return ApiResponse.notFound(res, 'So‘rovnoma topilmadi')
@@ -296,11 +334,31 @@ Mas’ul xodimlar murojaatingizni ko‘rib chiqadi. Ishonchingiz uchun rahmat!`,
       if (!validId(req.params.id)) return ApiResponse.notFound(res, 'So‘rovnoma topilmadi')
       const status = req.body.status
       if (!['draft', 'active', 'closed'].includes(status)) return ApiResponse.badRequest(res, 'Holat noto‘g‘ri')
+      if (status === 'active' && (!Array.isArray(req.body.studentIds) || !req.body.studentIds.some(validId))) return ApiResponse.badRequest(res, 'So‘rovnomani faollashtirish uchun kamida bitta talabani tanlang')
       if (status === 'active') await Survey.updateMany({ _id: { $ne: req.params.id }, status: 'active' }, { status: 'closed', closedAt: new Date() })
       const survey = await Survey.findByIdAndUpdate(req.params.id, { status, ...(status === 'active' ? { activatedAt: new Date(), closedAt: null } : {}), ...(status === 'closed' ? { closedAt: new Date() } : {}) }, { new: true })
       if (!survey) return ApiResponse.notFound(res, 'So‘rovnoma topilmadi')
+      let notificationResult = null
+      if (status === 'active') {
+        const requestedIds = [...new Set((Array.isArray(req.body.studentIds) ? req.body.studentIds : []).filter(validId).map(String))]
+        const activeStudentIds = requestedIds.length ? await StudentContract.distinct('student', { status: 'active', student: { $in: requestedIds } }) : []
+        const linkRows = activeStudentIds.length ? await TelegramStudentLink.find({ student: { $in: activeStudentIds } }).select('chatId student').sort({ updatedAt: -1 }) : []
+        const linkByStudent = new Map()
+        linkRows.forEach((link) => { if (!linkByStudent.has(link.student.toString())) linkByStudent.set(link.student.toString(), link) })
+        const links = [...linkByStudent.values()]
+        const text = `📋 <b>Yangi so‘rovnoma</b>\n\n<b>${escapeTelegramHtml(survey.title)}</b>${survey.description ? `\n<i>${escapeTelegramHtml(survey.description)}</i>` : ''}\n\nHurmatli talaba, yotoqxona sharoitlarini yaxshilashga yordam berish uchun ushbu so‘rovnomada qatnashishingizni so‘raymiz. Fikringiz biz uchun muhim!`
+        let sent = 0
+        let failed = 0
+        for (let index = 0; index < links.length; index += 20) {
+          const results = await Promise.allSettled(links.slice(index, index + 20).map((link) => telegramCall('sendMessage', { chat_id: link.chatId, text, parse_mode: 'HTML', reply_markup: mainKeyboard })))
+          sent += results.filter((result) => result.status === 'fulfilled').length
+          failed += results.filter((result) => result.status === 'rejected').length
+          if (index + 20 < links.length) await new Promise((resolve) => setTimeout(resolve, 1000))
+        }
+        notificationResult = { selected: requestedIds.length, sent, failed, unavailable: Math.max(0, requestedIds.length - links.length) }
+      }
       req.app.get('io')?.emit('surveys:changed', { id: survey.id })
-      return ApiResponse.ok(res, { survey })
+      return ApiResponse.ok(res, { survey, notificationResult })
     } catch (error) { return next(error) }
   }
 

@@ -2,6 +2,7 @@ import mongoose from 'mongoose'
 
 const complaintSchema = new mongoose.Schema({
   student: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true, index: true },
+  room: { type: mongoose.Schema.Types.ObjectId, ref: 'Room', default: null, index: true },
   telegramChatId: { type: String, trim: true, default: '' },
   text: { type: String, required: true, trim: true, maxlength: 3000 },
   status: { type: String, enum: ['new', 'in_progress', 'resolved'], default: 'new', index: true },

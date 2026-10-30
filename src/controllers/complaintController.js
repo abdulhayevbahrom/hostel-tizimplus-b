@@ -1,5 +1,6 @@
 import mongoose from 'mongoose'
 import { Complaint } from '../models/Complaint.js'
+import { StudentContract } from '../models/StudentContract.js'
 import { ApiResponse } from '../utils/response.js'
 import { sendTelegramMessage } from '../utils/telegram.js'
 
@@ -23,13 +24,25 @@ class ComplaintController {
         filter.$or = [{ text: { $regex: term, $options: 'i' } }, { student: { $in: students.map((item) => item._id) } }]
       }
       const [complaints, total, grouped] = await Promise.all([
-        Complaint.find(filter).populate('student', 'fullName phone').populate('handledBy', 'firstname lastname').sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit),
+        Complaint.find(filter).populate('student', 'fullName phone').populate('room', 'roomNumber block floor').populate('handledBy', 'firstname lastname').sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit),
         Complaint.countDocuments(filter),
         Complaint.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
       ])
       const summary = { total: 0, new: 0, in_progress: 0, resolved: 0 }
       grouped.forEach((row) => { summary[row._id] = row.count; summary.total += row.count })
-      return ApiResponse.ok(res, { complaints, summary, pagination: { page, limit, total, pages: Math.ceil(total / limit) } })
+      const missingStudentIds = complaints.filter((complaint) => !complaint.room && complaint.student).map((complaint) => complaint.student._id)
+      const fallbackContracts = missingStudentIds.length ? await StudentContract.find({ student: { $in: missingStudentIds }, status: 'active' }).sort({ createdAt: -1 }).populate('room', 'roomNumber block floor') : []
+      const roomByStudent = new Map()
+      fallbackContracts.filter((contract) => contract.room).forEach((contract) => {
+        const studentId = contract.student.toString()
+        if (!roomByStudent.has(studentId)) roomByStudent.set(studentId, contract.room)
+      })
+      const complaintRows = complaints.map((complaint) => {
+        const row = complaint.toJSON()
+        if (!row.room && row.student) row.room = roomByStudent.get(String(row.student.id || row.student._id)) || null
+        return row
+      })
+      return ApiResponse.ok(res, { complaints: complaintRows, summary, pagination: { page, limit, total, pages: Math.ceil(total / limit) } })
     } catch (error) { return next(error) }
   }
 
@@ -42,7 +55,7 @@ class ComplaintController {
         staffNote: String(req.body.staffNote || '').trim(),
         handledBy: req.employee._id,
         resolvedAt: req.body.status === 'resolved' ? new Date() : null,
-      }, { new: true, runValidators: true }).populate('student', 'fullName phone').populate('handledBy', 'firstname lastname')
+      }, { new: true, runValidators: true }).populate('student', 'fullName phone').populate('room', 'roomNumber block floor').populate('handledBy', 'firstname lastname')
       if (!complaint) return ApiResponse.notFound(res, 'Shikoyat topilmadi')
       req.app.get('io')?.emit('complaints:changed', { id: complaint.id })
       if (complaint.telegramChatId) {
