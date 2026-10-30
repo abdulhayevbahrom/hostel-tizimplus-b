@@ -61,6 +61,22 @@ function answerSentiment(question, value) {
   return question.options.find((option) => option.value === String(value))?.sentiment || 'neutral'
 }
 
+function isYesNoQuestion(question) {
+  if (question.type === 'yes_no') return true
+  const values = (question.options || []).map((option) => String(option.value).toLowerCase()).sort()
+  return values.length === 2 && values[0] === 'no' && values[1] === 'yes'
+}
+
+function resultAnswerLabel(question, value) {
+  if (value === null || value === undefined || value === '') return 'Javobsiz'
+  if (question.type === 'rating') return String(value)
+  const option = (question.options || []).find((item) => String(item.value) === String(value))
+  if (option?.label) return option.label
+  if (String(value).toLowerCase() === 'yes') return 'Ha'
+  if (String(value).toLowerCase() === 'no') return 'Yo‘q'
+  return String(value)
+}
+
 function questionKeyboard(question, questionIndex, prefix = 'a') {
   const skipRow = question.required === false ? [[{ text: 'O‘tkazib yuborish', callback_data: `s:${questionIndex}` }]] : []
   if (question.type === 'text') return question.required === false ? { inline_keyboard: skipRow } : { remove_keyboard: true }
@@ -385,19 +401,19 @@ Mas’ul xodimlar murojaatingizni ko‘rib chiqadi. Ishonchingiz uchun rahmat!`,
         allQuestions.push(question)
         question.options.forEach((option) => { if (option.followUp?.enabled) allQuestions.push(option.followUp) })
       })
-      const questionStats = allQuestions.map((question) => ({ questionId: question._id.toString(), text: question.text, type: question.type, typeLabel: questionTypeLabels[question.type], total: 0, values: {} }))
+      const questionStats = allQuestions.map((question) => ({ questionId: question._id.toString(), text: question.text, type: question.type, typeLabel: isYesNoQuestion(question) ? 'Ha / yo‘q' : questionTypeLabels[question.type], total: 0, values: {} }))
       const questionMap = new Map(allQuestions.map((question, index) => [question._id.toString(), { question, index }]))
       const rows = responses.map((response) => {
         let positive = 0; let negative = 0; let neutral = 0
         const answers = response.answers.map((answer) => {
           const match = questionMap.get(answer.questionId.toString())
           if (!match) return null
-          const key = String(answer.value ?? '')
+          const key = resultAnswerLabel(match.question, answer.value)
           questionStats[match.index].total += 1
           questionStats[match.index].values[key] = (questionStats[match.index].values[key] || 0) + 1
           const mood = answerSentiment(match.question, answer.value)
           if (mood) { sentiment[mood] += 1; if (mood === 'positive') positive += 1; else if (mood === 'negative') negative += 1; else neutral += 1 }
-          return { questionId: answer.questionId, question: match.question.text, value: answer.value }
+          return { questionId: answer.questionId, question: match.question.text, value: key }
         }).filter(Boolean)
         const personalMood = positive > negative ? 'positive' : negative > positive ? 'negative' : 'neutral'
         return { id: response._id.toString(), student: response.student, completedAt: response.completedAt, sentiment: personalMood, answers }
