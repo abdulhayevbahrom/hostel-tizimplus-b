@@ -281,7 +281,7 @@ class StudentContractController {
         ];
       }
 
-      const limit = 25;
+      const limit = req.query.export === "1" ? 5000 : 25;
       const requestedPage = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
       const warningLimit = new Date(today);
       warningLimit.setDate(warningLimit.getDate() + 3);
