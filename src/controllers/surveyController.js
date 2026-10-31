@@ -394,7 +394,15 @@ Mas’ul xodimlar murojaatingizni ko‘rib chiqadi. Ishonchingiz uchun rahmat!`,
       if (!validId(req.params.id)) return ApiResponse.notFound(res, 'So‘rovnoma topilmadi')
       const survey = await Survey.findById(req.params.id).lean()
       if (!survey) return ApiResponse.notFound(res, 'So‘rovnoma topilmadi')
-      const responses = await SurveyResponse.find({ survey: survey._id }).populate('student', 'fullName phone').sort({ completedAt: -1 }).lean()
+      const [responses, activeContracts] = await Promise.all([
+        SurveyResponse.find({ survey: survey._id }).populate('student', 'fullName phone').sort({ completedAt: -1 }).lean(),
+        StudentContract.find({ status: 'active' })
+          .select('student room createdAt')
+          .populate('student', 'fullName phone course')
+          .populate('room', 'roomNumber block floor')
+          .sort({ createdAt: -1 })
+          .lean(),
+      ])
       const sentiment = { positive: 0, neutral: 0, negative: 0 }
       const allQuestions = []
       survey.questions.forEach((question) => {
@@ -420,7 +428,60 @@ Mas’ul xodimlar murojaatingizni ko‘rib chiqadi. Ishonchingiz uchun rahmat!`,
       })
       const scored = sentiment.positive + sentiment.neutral + sentiment.negative
       const percentages = Object.fromEntries(Object.entries(sentiment).map(([key, value]) => [key, scored ? Math.round(value * 100 / scored) : 0]))
-      return ApiResponse.ok(res, { survey: { ...survey, id: survey._id.toString() }, summary: { responseCount: responses.length, sentiment, percentages }, questionStats, responses: rows })
+      const latestContractByStudent = new Map()
+      activeContracts.forEach((contract) => {
+        const studentId = contract.student?._id?.toString()
+        if (studentId && !latestContractByStudent.has(studentId)) latestContractByStudent.set(studentId, contract)
+      })
+      const respondentIds = new Set(responses.map((response) => response.student?._id?.toString()).filter(Boolean))
+      const groups = { floors: new Map(), courses: new Map(), rooms: new Map() }
+      const notParticipatedStudents = []
+      const addGroup = (map, key, label, participated) => {
+        const current = map.get(key) || { key, label, total: 0, participated: 0, notParticipated: 0 }
+        current.total += 1
+        current[participated ? 'participated' : 'notParticipated'] += 1
+        map.set(key, current)
+      }
+      let participated = 0
+      latestContractByStudent.forEach((contract, studentId) => {
+        const didParticipate = respondentIds.has(studentId)
+        if (didParticipate) participated += 1
+        const floor = contract.room?.floor || 'Aniqlanmagan'
+        const course = contract.student?.course ? `${contract.student.course}-kurs` : 'Aniqlanmagan'
+        const room = contract.room ? `${contract.room.block ? `${contract.room.block} · ` : ''}${contract.room.roomNumber}-xona` : 'Aniqlanmagan'
+        const courseKey = String(contract.student?.course || 'unknown')
+        const roomKey = contract.room?._id?.toString() || 'unknown'
+        const floorLabel = floor === 'Aniqlanmagan' ? floor : `${floor}-qavat`
+        addGroup(groups.floors, floor, floorLabel, didParticipate)
+        addGroup(groups.courses, courseKey, course, didParticipate)
+        addGroup(groups.rooms, roomKey, room, didParticipate)
+        if (!didParticipate) notParticipatedStudents.push({
+          id: studentId,
+          fullName: contract.student?.fullName || 'Noma’lum talaba',
+          phone: contract.student?.phone || '',
+          course,
+          floor: floorLabel,
+          room,
+          floorKey: floor,
+          courseKey,
+          roomKey,
+        })
+      })
+      const serializeGroups = (map) => [...map.values()]
+        .map((item) => ({ ...item, participationRate: item.total ? Math.round(item.participated * 100 / item.total) : 0 }))
+        .sort((a, b) => a.label.localeCompare(b.label, 'uz', { numeric: true }))
+      const totalActiveStudents = latestContractByStudent.size
+      const participationStats = {
+        totalActiveStudents,
+        participated,
+        notParticipated: totalActiveStudents - participated,
+        participationRate: totalActiveStudents ? Math.round(participated * 100 / totalActiveStudents) : 0,
+        floors: serializeGroups(groups.floors),
+        courses: serializeGroups(groups.courses),
+        rooms: serializeGroups(groups.rooms),
+        notParticipatedStudents: notParticipatedStudents.sort((a, b) => a.fullName.localeCompare(b.fullName, 'uz')),
+      }
+      return ApiResponse.ok(res, { survey: { ...survey, id: survey._id.toString() }, summary: { responseCount: responses.length, sentiment, percentages }, questionStats, participationStats, responses: rows })
     } catch (error) { return next(error) }
   }
 
