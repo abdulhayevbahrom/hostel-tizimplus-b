@@ -362,7 +362,7 @@ Mas’ul xodimlar murojaatingizni ko‘rib chiqadi. Ishonchingiz uchun rahmat!`,
         const linkByStudent = new Map()
         linkRows.forEach((link) => { if (!linkByStudent.has(link.student.toString())) linkByStudent.set(link.student.toString(), link) })
         const links = [...linkByStudent.values()]
-        const text = `📋 <b>Yangi so‘rovnoma</b>\n\n<b>${escapeTelegramHtml(survey.title)}</b>${survey.description ? `\n<i>${escapeTelegramHtml(survey.description)}</i>` : ''}\n\nHurmatli talaba, yotoqxona sharoitlarini yaxshilashga yordam berish uchun ushbu so‘rovnomada qatnashishingizni so‘raymiz. Fikringiz biz uchun muhim!`
+        const text = `📋 <b>Yangi so‘rovnoma</b>\n\n<b>${escapeTelegramHtml(survey.title)}</b>${survey.description ? `\n<i>${escapeTelegramHtml(survey.description)}</i>` : ''}`
         let sent = 0
         let failed = 0
         for (let index = 0; index < links.length; index += 20) {
