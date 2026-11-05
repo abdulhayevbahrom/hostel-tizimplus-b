@@ -62,7 +62,7 @@ class PaymentStatisticsController {
       const period = /^\d{4}-\d{2}$/.test(String(req.query.period || '')) ? String(req.query.period) : periodKeyInTashkent(now)
       const contractIds = await StudentContract.distinct('_id', { room: req.params.roomId, status: { $ne: 'cancelled' } })
       const installments = await ContractInstallment.find({ periodKey: period, contract: { $in: contractIds } })
-        .populate({ path: 'student', select: 'fullName phone photo' })
+        .populate({ path: 'student', select: 'fullName phone photo studentStatus' })
         .populate({ path: 'contract', select: 'contractNumber room', populate: { path: 'room', select: 'roomNumber block floor' } })
         .sort({ dueDate: 1 })
       const usable = installments.filter((item) => item.student && item.contract?.room)

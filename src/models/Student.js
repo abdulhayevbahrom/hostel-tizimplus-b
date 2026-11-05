@@ -15,6 +15,7 @@ const studentSchema = new mongoose.Schema(
     university: { type: mongoose.Schema.Types.ObjectId, ref: 'University', default: null, index: true },
     faculty: { type: mongoose.Schema.Types.ObjectId, ref: 'Faculty', default: null, index: true },
     address: { type: String, trim: true, maxlength: 300, default: '' },
+    note: { type: String, trim: true, maxlength: 1000, default: '' },
     course: { type: Number, required: true, min: 1, max: 6 },
     educationType: { type: String, enum: ['daytime', 'evening', 'extramural', 'employed'], default: 'daytime', index: true },
     hasTemporaryRegistration: { type: Boolean, default: false, index: true },

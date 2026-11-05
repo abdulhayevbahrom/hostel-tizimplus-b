@@ -1,12 +1,15 @@
 import mongoose from 'mongoose'
 import { BlacklistEntry } from '../models/BlacklistEntry.js'
+import { ContractInstallment } from '../models/ContractInstallment.js'
 import { Faculty } from '../models/Faculty.js'
+import { Payment } from '../models/Payment.js'
 import { Room } from '../models/Room.js'
 import { Student } from '../models/Student.js'
 import { StudentContract } from '../models/StudentContract.js'
 import { University } from '../models/University.js'
 import { ApiResponse } from '../utils/response.js'
 import { uploadImages } from '../utils/imgbb.js'
+import { paymentTimingStatus, periodKeyInTashkent } from '../utils/paymentTime.js'
 
 class StudentController {
   history = async (req, res, next) => {
@@ -48,6 +51,7 @@ class StudentController {
       university: body.university,
       faculty: body.faculty,
       address: String(body.address || '').trim(),
+      note: String(body.note || '').trim(),
       course: Number(body.course),
       educationType: ['daytime', 'evening', 'extramural', 'employed'].includes(body.educationType) ? body.educationType : 'daytime',
       hasTemporaryRegistration: body.hasTemporaryRegistration === true || body.hasTemporaryRegistration === 'true',
@@ -201,6 +205,9 @@ class StudentController {
         filter._id = { $in: studentIds }
       }
       const now = new Date()
+      const paymentPeriod = /^\d{4}-\d{2}$/.test(String(req.query.period || ''))
+        ? String(req.query.period)
+        : periodKeyInTashkent(now)
       const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
       const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999)
       const [contractStudentIds, currentContractStudentIds] = await Promise.all([
@@ -232,6 +239,48 @@ class StudentController {
       const activeContracts = await StudentContract.find({ student: { $in: students.map((student) => student._id) }, status: 'active', startDate: { $lte: todayEnd }, endDate: { $gte: todayStart } })
         .select('student room endDate')
         .populate('room', 'roomNumber block floor')
+      const statisticsContractIds = await StudentContract.distinct('_id', {
+        student: { $in: students.map((student) => student._id) },
+        status: { $ne: 'cancelled' },
+      })
+      const currentInstallments = await ContractInstallment.find({
+        periodKey: paymentPeriod,
+        contract: { $in: statisticsContractIds },
+      }).sort({ dueDate: 1 })
+      const installmentIds = currentInstallments.map((installment) => installment._id)
+      const payments = installmentIds.length ? await Payment.find({
+        status: 'active',
+        cancelledAt: null,
+        'allocations.installment': { $in: installmentIds },
+      }).select('allocations paymentDate createdAt').sort({ paymentDate: 1, createdAt: 1 }) : []
+      const allocationsByInstallment = new Map()
+      payments.forEach((payment) => payment.allocations.forEach((allocation) => {
+        const installmentId = allocation.installment.toString()
+        if (!allocationsByInstallment.has(installmentId)) allocationsByInstallment.set(installmentId, [])
+        allocationsByInstallment.get(installmentId).push({ amount: allocation.amount, paidAt: payment.paymentDate || payment.createdAt })
+      }))
+      const paymentStatusPriority = { late: 4, almostOnTime: 3, pending: 2, onTime: 1 }
+      const currentPaymentStatusByStudent = new Map()
+      currentInstallments.forEach((installment) => {
+        const allocations = allocationsByInstallment.get(installment.id) || []
+        let paidAmount = 0
+        let completedAt = null
+        allocations.forEach((allocation) => {
+          paidAmount += allocation.amount
+          if (!completedAt && paidAmount >= installment.amount) completedAt = allocation.paidAt
+        })
+        const paymentStatus = paymentTimingStatus({
+          dueDate: installment.dueDate,
+          completedAt: completedAt || installment.updatedAt,
+          isPaid: paidAmount >= installment.amount,
+          now,
+        })
+        const studentId = installment.student.toString()
+        const previousStatus = currentPaymentStatusByStudent.get(studentId)
+        if (!previousStatus || paymentStatusPriority[paymentStatus] > paymentStatusPriority[previousStatus]) {
+          currentPaymentStatusByStudent.set(studentId, paymentStatus)
+        }
+      })
       const studentsWithContract = new Set((await StudentContract.distinct('student', {
         student: { $in: students.map((student) => student._id) },
         status: { $ne: 'cancelled' },
@@ -239,9 +288,9 @@ class StudentController {
       const activeContractByStudent = new Map(activeContracts.map((contract) => [contract.student.toString(), contract]))
       const rows = students.map((student) => {
         const activeContract = activeContractByStudent.get(student.id)
-        return { ...student.toJSON(), hasContract: studentsWithContract.has(student.id), activeContractEndDate: activeContract?.endDate || null, activeRoom: activeContract?.room || null }
+        return { ...student.toJSON(), hasContract: studentsWithContract.has(student.id), activeContractEndDate: activeContract?.endDate || null, activeRoom: activeContract?.room || null, currentPaymentStatus: currentPaymentStatusByStudent.get(student.id) || null }
       })
-      return ApiResponse.ok(res, { students: rows, pagination: { page: currentPage, limit, total, totalPages } })
+      return ApiResponse.ok(res, { students: rows, paymentPeriod, pagination: { page: currentPage, limit, total, totalPages } })
     } catch (error) { return next(error) }
   }
 
