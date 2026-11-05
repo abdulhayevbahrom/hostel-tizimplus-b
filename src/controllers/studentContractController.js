@@ -320,7 +320,7 @@ class StudentContractController {
       const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
       const monthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 1);
       const pageIds = pageRows.map((row) => row._id);
-      const [currentMonthRows, cancelledPaidRows, pageContracts] = await Promise.all([
+      const [currentMonthRows, cancelledPaidRows, cancelledPaidByPeriodRows, pageContracts] = await Promise.all([
         ContractInstallment.aggregate([
           { $match: { periodKey: currentPeriod, contract: { $in: summaryContractIds }, student: { $in: validStudentIds } } },
           { $group: { _id: "$contract", amount: { $sum: "$amount" } } },
@@ -328,6 +328,15 @@ class StudentContractController {
         cancelledIds.length ? Payment.aggregate([
           { $match: { contract: { $in: cancelledIds }, student: { $in: validStudentIds }, paymentPurpose: { $ne: 'deposit' }, status: 'active', cancelledAt: null, createdAt: { $gte: monthStart, $lt: monthEnd } } },
           { $group: { _id: null, amount: { $sum: '$amount' } } },
+        ]) : [],
+        cancelledIds.length ? Payment.aggregate([
+          { $match: { contract: { $in: cancelledIds }, student: { $in: validStudentIds }, paymentPurpose: { $ne: 'deposit' }, status: 'active', cancelledAt: null } },
+          { $unwind: '$allocations' },
+          { $lookup: { from: ContractInstallment.collection.name, localField: 'allocations.installment', foreignField: '_id', as: 'installment' } },
+          { $unwind: '$installment' },
+          { $match: { $expr: { $eq: ['$installment.contract', '$contract'] } } },
+          { $group: { _id: '$installment.periodKey', amount: { $sum: '$allocations.amount' } } },
+          { $sort: { _id: 1 } },
         ]) : [],
         pageIds.length ? StudentContract.find({ _id: { $in: pageIds } })
           .populate({ path: "student", select: "fullName phone parentPhone passportSeries passportNumber jshr photo university faculty course gender educationType hasTaxContract taxContractType", populate: [{ path: "university", select: "name shortName" }, { path: "faculty", select: "name" }] })
@@ -347,6 +356,8 @@ class StudentContractController {
         }
       }
       summary.cancelledPaidAmount = cancelledPaidRows[0]?.amount || 0;
+      summary.cancelledPaidByPeriod = cancelledPaidByPeriodRows.map((row) => ({ period: row._id, amount: row.amount }));
+      summary.cancelledPaidTotal = summary.cancelledPaidByPeriod.reduce((totalAmount, row) => totalAmount + row.amount, 0);
       const contractsById = new Map(pageContracts.filter((contract) => contract.student && contract.room).map((contract) => [contract.id, contract]));
       const rows = pageIds.map((id) => contractsById.get(String(id))).filter(Boolean);
       return ApiResponse.ok(res, { contracts: rows, summary, pagination: { page, limit, total, totalPages } });
