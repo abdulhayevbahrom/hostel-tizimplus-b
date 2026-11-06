@@ -26,6 +26,34 @@ const sumField = async (Model, match, field = 'amount') => {
   return { amount: result?.total || 0, count: result?.count || 0 }
 }
 
+const paymentDateStages = (match, start, end = null) => [
+  { $match: match },
+  { $addFields: { _dashboardPaymentDate: { $ifNull: ['$paymentDate', '$createdAt'] } } },
+  { $match: { _dashboardPaymentDate: { $gte: start, ...(end ? { $lt: end } : {}) } } },
+]
+
+const sumPaymentsByDate = async (match, start, end) => {
+  const [result] = await Payment.aggregate([
+    ...paymentDateStages(match, start, end),
+    { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
+  ])
+  return { amount: result?.total || 0, count: result?.count || 0 }
+}
+
+const expenseDateStages = (match, start, end = null) => [
+  { $match: match },
+  { $addFields: { _dashboardExpenseDate: { $ifNull: ['$spentAt', '$createdAt'] } } },
+  { $match: { _dashboardExpenseDate: { $gte: start, ...(end ? { $lt: end } : {}) } } },
+]
+
+const sumExpensesByDate = async (start, end) => {
+  const [result] = await Expense.aggregate([
+    ...expenseDateStages({}, start, end),
+    { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
+  ])
+  return { amount: result?.total || 0, count: result?.count || 0 }
+}
+
 const recentPeriods = (now, count = 6) => Array.from({ length: count }, (_, index) => {
   const date = new Date(now.getFullYear(), now.getMonth() - (count - 1 - index), 1)
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
@@ -49,7 +77,7 @@ class DashboardController {
       const validStudentFilter = { student: { $in: validStudentIds } }
       const activeContractFilter = { student: { $in: validStudentIds }, status: { $in: ['active', 'completed'] }, startDate: { $lte: selectedDayEnd }, endDate: { $gte: dayStart } }
       const financialContractIds = await StudentContract.distinct('_id', { student: { $in: validStudentIds }, status: { $ne: 'cancelled' } })
-      const financialPaymentFilter = { $or: [{ contract: { $in: financialContractIds } }, { paymentPurpose: 'deposit', student: { $in: validStudentIds } }], status: { $ne: 'cancelled' }, cancelledAt: null }
+      const financialPaymentFilter = { student: { $in: validStudentIds }, status: { $ne: 'cancelled' }, cancelledAt: null }
       const [
         rooms,
         activeContracts,
@@ -83,30 +111,30 @@ class DashboardController {
         Room.find().select('capacity status'),
         StudentContract.find(activeContractFilter).select('student room'),
         Employee.find({ isActive: true }).select('salary'),
-        sumField(Payment, { ...financialPaymentFilter, createdAt: { $gte: monthStart, $lt: monthEnd } }),
+        sumPaymentsByDate(financialPaymentFilter, monthStart, monthEnd),
         sumField(FinePayment, { ...validStudentFilter, createdAt: { $gte: monthStart, $lt: monthEnd } }),
-        sumField(Expense, { createdAt: { $gte: monthStart, $lt: monthEnd } }),
+        sumExpensesByDate(monthStart, monthEnd),
         sumField(SalaryPayment, { period: monthKey }),
         ContractInstallment.find({ periodKey: monthKey, contract: { $in: financialContractIds } }).select('student contract amount paidAmount status dueDate').populate('student', 'fullName').populate({ path: 'contract', select: 'room', populate: { path: 'room', select: 'roomNumber block' } }),
         Fine.find({ ...validStudentFilter, $expr: { $lt: ['$paidAmount', '$amount'] } }).select('amount paidAmount student'),
         Attendance.find({ ...validStudentFilter, attendanceDate: dayKey }).select('status'),
-        Payment.find(financialPaymentFilter).populate('student', 'fullName').sort({ createdAt: -1 }).limit(5),
+        Payment.find(financialPaymentFilter).populate('student', 'fullName').sort({ paymentDate: -1, createdAt: -1 }).limit(5),
         FinePayment.find(validStudentFilter).populate('student', 'fullName').sort({ createdAt: -1 }).limit(5),
-        Expense.find().populate('createdBy', 'firstname lastname').sort({ createdAt: -1 }).limit(5),
+        Expense.find().populate('createdBy', 'firstname lastname').sort({ spentAt: -1, createdAt: -1 }).limit(5),
         SalaryPayment.find().populate('employee', 'firstname lastname').sort({ createdAt: -1 }).limit(5),
-        Payment.aggregate([{ $match: { ...financialPaymentFilter, createdAt: { $gte: new Date(now.getFullYear(), now.getMonth() - 5, 1) } } }, { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$createdAt', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' } } }]),
+        Payment.aggregate([...paymentDateStages(financialPaymentFilter, new Date(now.getFullYear(), now.getMonth() - 5, 1)), { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$_dashboardPaymentDate', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' } } }]),
         FinePayment.aggregate([{ $match: { ...validStudentFilter, createdAt: { $gte: new Date(now.getFullYear(), now.getMonth() - 5, 1) } } }, { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$createdAt', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' } } }]),
-        Expense.aggregate([{ $match: { createdAt: { $gte: new Date(now.getFullYear(), now.getMonth() - 5, 1) } } }, { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$createdAt', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' } } }]),
+        Expense.aggregate([...expenseDateStages({}, new Date(now.getFullYear(), now.getMonth() - 5, 1)), { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$_dashboardExpenseDate', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' } } }]),
         SalaryPayment.aggregate([{ $match: { period: { $gte: recentPeriods(now)[0] } } }, { $group: { _id: '$period', amount: { $sum: '$amount' } } }]),
-        sumField(Payment, { ...financialPaymentFilter, createdAt: { $gte: dayStart, $lt: dayEnd } }),
+        sumPaymentsByDate(financialPaymentFilter, dayStart, dayEnd),
         sumField(FinePayment, { ...validStudentFilter, createdAt: { $gte: dayStart, $lt: dayEnd } }),
-        sumField(Expense, { createdAt: { $gte: dayStart, $lt: dayEnd } }),
-        Payment.aggregate([{ $match: { ...financialPaymentFilter, createdAt: { $gte: monthStart, $lt: monthEnd } } }, ...unwindPaymentParts, { $group: { _id: '$_effectivePaymentParts.method', amount: { $sum: '$_effectivePaymentParts.amount' }, payments: { $addToSet: '$_id' } } }, { $project: { amount: 1, count: { $size: '$payments' } } }]),
+        sumExpensesByDate(dayStart, dayEnd),
+        Payment.aggregate([...paymentDateStages(financialPaymentFilter, monthStart, monthEnd), ...unwindPaymentParts, { $group: { _id: '$_effectivePaymentParts.method', amount: { $sum: '$_effectivePaymentParts.amount' }, payments: { $addToSet: '$_id' } } }, { $project: { amount: 1, count: { $size: '$payments' } } }]),
         FinePayment.aggregate([{ $match: { ...validStudentFilter, createdAt: { $gte: monthStart, $lt: monthEnd } } }, { $group: { _id: '$method', amount: { $sum: '$amount' }, count: { $sum: 1 } } }]),
-        Payment.aggregate([{ $match: { ...financialPaymentFilter, createdAt: { $gte: monthStart, $lt: monthEnd } } }, { $group: { _id: { $dayOfMonth: { date: '$createdAt', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' } } }]),
+        Payment.aggregate([...paymentDateStages(financialPaymentFilter, monthStart, monthEnd), { $group: { _id: { $dayOfMonth: { date: '$_dashboardPaymentDate', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' } } }]),
         FinePayment.aggregate([{ $match: { ...validStudentFilter, createdAt: { $gte: monthStart, $lt: monthEnd } } }, { $group: { _id: { $dayOfMonth: { date: '$createdAt', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' } } }]),
-        Expense.aggregate([{ $match: { createdAt: { $gte: monthStart, $lt: monthEnd } } }, { $group: { _id: { $dayOfMonth: { date: '$createdAt', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' } } }]),
-        Payment.aggregate([{ $match: { ...financialPaymentFilter, createdAt: { $gte: dayStart, $lt: dayEnd } } }, ...unwindPaymentParts, { $group: { _id: '$_effectivePaymentParts.method', amount: { $sum: '$_effectivePaymentParts.amount' }, payments: { $addToSet: '$_id' } } }, { $project: { amount: 1, count: { $size: '$payments' } } }]),
+        Expense.aggregate([...expenseDateStages({}, monthStart, monthEnd), { $group: { _id: { $dayOfMonth: { date: '$_dashboardExpenseDate', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' } } }]),
+        Payment.aggregate([...paymentDateStages(financialPaymentFilter, dayStart, dayEnd), ...unwindPaymentParts, { $group: { _id: '$_effectivePaymentParts.method', amount: { $sum: '$_effectivePaymentParts.amount' }, payments: { $addToSet: '$_id' } } }, { $project: { amount: 1, count: { $size: '$payments' } } }]),
         FinePayment.aggregate([{ $match: { ...validStudentFilter, createdAt: { $gte: dayStart, $lt: dayEnd } } }, { $group: { _id: '$method', amount: { $sum: '$amount' }, count: { $sum: 1 } } }]),
       ])
 
@@ -164,9 +192,9 @@ class DashboardController {
       }
 
       const transactions = [
-        ...recentPayments.map((item) => ({ id: `payment-${item.id}`, type: 'income', title: item.student?.fullName || 'Talaba to‘lovi', subtitle: 'Yotoqxona to‘lovi', amount: item.amount, createdAt: item.createdAt })),
+        ...recentPayments.map((item) => ({ id: `payment-${item.id}`, type: 'income', title: item.student?.fullName || 'Talaba to‘lovi', subtitle: 'Yotoqxona to‘lovi', amount: item.amount, createdAt: item.paymentDate || item.createdAt })),
         ...recentFinePayments.map((item) => ({ id: `fine-payment-${item.id}`, type: 'income', title: item.student?.fullName || 'Jarima to‘lovi', subtitle: 'Jarima to‘lovi', amount: item.amount, createdAt: item.createdAt })),
-        ...recentExpenses.map((item) => ({ id: `expense-${item.id}`, type: 'expense', title: item.title, subtitle: item.category, amount: item.amount, createdAt: item.createdAt })),
+        ...recentExpenses.map((item) => ({ id: `expense-${item.id}`, type: 'expense', title: item.title, subtitle: item.category, amount: item.amount, createdAt: item.spentAt || item.createdAt })),
         ...recentSalaries.map((item) => ({ id: `salary-${item.id}`, type: 'salary', title: `${item.employee?.firstname || ''} ${item.employee?.lastname || ''}`.trim() || 'Xodim', subtitle: 'Oylik to‘lovi', amount: item.amount, createdAt: item.createdAt })),
       ].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, 8)
 

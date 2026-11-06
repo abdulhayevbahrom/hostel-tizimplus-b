@@ -254,8 +254,6 @@ class StudentContractController {
         filter.student = { $in: await Student.distinct("_id", { hasTaxContract: true, taxContractType: req.query.contractType }) };
       }
       const currentPeriod = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
-      const nextMonth = new Date(today.getFullYear(), today.getMonth() + 1, 1);
-      const nextPeriod = `${nextMonth.getFullYear()}-${String(nextMonth.getMonth() + 1).padStart(2, "0")}`;
       const summaryFilter = {
         ...(filter.student ? { student: filter.student } : {}),
         ...(filter.room ? { room: filter.room } : {}),
@@ -288,7 +286,7 @@ class StudentContractController {
       const warningLimit = new Date(today);
       warningLimit.setDate(warningLimit.getDate() + 3);
       let [summaryContracts, total, pageRows] = await Promise.all([
-        StudentContract.find(summaryFilter).select("_id status").lean(),
+        StudentContract.find(summaryFilter).select("_id status cancelledAt").lean(),
         StudentContract.countDocuments(filter),
         StudentContract.aggregate([
           { $match: filter },
@@ -321,6 +319,9 @@ class StudentContractController {
       const cancelledIds = summaryContracts.filter((contract) => contract.status === 'cancelled').map((contract) => contract._id);
       const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
       const monthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+      const currentMonthCancelledIds = summaryContracts
+        .filter((contract) => contract.status === 'cancelled' && contract.cancelledAt >= monthStart && contract.cancelledAt < monthEnd)
+        .map((contract) => contract._id);
       const pageIds = pageRows.map((row) => row._id);
       const [currentMonthRows, cancelledPaidRows, cancelledPaidByPeriodRows, pageContracts] = await Promise.all([
         ContractInstallment.aggregate([
@@ -331,12 +332,12 @@ class StudentContractController {
           { $match: { contract: { $in: cancelledIds }, student: { $in: validStudentIds }, paymentPurpose: { $ne: 'deposit' }, status: 'active', cancelledAt: null, createdAt: { $gte: monthStart, $lt: monthEnd } } },
           { $group: { _id: null, amount: { $sum: '$amount' } } },
         ]) : [],
-        cancelledIds.length ? Payment.aggregate([
-          { $match: { contract: { $in: cancelledIds }, student: { $in: validStudentIds }, paymentPurpose: { $ne: 'deposit' }, status: 'active', cancelledAt: null } },
+        currentMonthCancelledIds.length ? Payment.aggregate([
+          { $match: { contract: { $in: currentMonthCancelledIds }, student: { $in: validStudentIds }, paymentPurpose: { $ne: 'deposit' }, status: 'active', cancelledAt: null } },
           { $unwind: '$allocations' },
           { $lookup: { from: ContractInstallment.collection.name, localField: 'allocations.installment', foreignField: '_id', as: 'installment' } },
           { $unwind: '$installment' },
-          { $match: { 'installment.periodKey': nextPeriod, $expr: { $eq: ['$installment.contract', '$contract'] } } },
+          { $match: { 'installment.periodKey': { $gt: currentPeriod }, $expr: { $eq: ['$installment.contract', '$contract'] } } },
           { $group: { _id: '$installment.periodKey', amount: { $sum: '$allocations.amount' } } },
           { $sort: { _id: 1 } },
         ]) : [],
@@ -358,8 +359,8 @@ class StudentContractController {
         }
       }
       summary.cancelledPaidAmount = cancelledPaidRows[0]?.amount || 0;
-      summary.cancelledNextPeriod = nextPeriod;
-      summary.cancelledNextPeriodPaidAmount = cancelledPaidByPeriodRows[0]?.amount || 0;
+      summary.cancelledFuturePaidByPeriod = cancelledPaidByPeriodRows.map((row) => ({ period: row._id, amount: row.amount }));
+      summary.cancelledFuturePaidAmount = summary.cancelledFuturePaidByPeriod.reduce((totalAmount, row) => totalAmount + row.amount, 0);
       const contractsById = new Map(pageContracts.filter((contract) => contract.student && contract.room).map((contract) => [contract.id, contract]));
       const rows = pageIds.map((id) => contractsById.get(String(id))).filter(Boolean);
       return ApiResponse.ok(res, { contracts: rows, summary, pagination: { page, limit, total, totalPages } });
