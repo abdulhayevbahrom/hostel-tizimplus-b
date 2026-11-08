@@ -9,6 +9,7 @@ import { Student } from '../models/Student.js'
 import { GeneralSetting } from '../models/GeneralSetting.js'
 import { ApiResponse } from '../utils/response.js'
 import { periodKeyInTashkent, tashkentDayEnd, tashkentDayStart } from '../utils/paymentTime.js'
+import { contractDepositAmount, studentDepositAmount } from '../utils/contractDeposit.js'
 import { buildPaymentParts, effectivePaymentParts, PAYMENT_METHODS, paymentFundHolderValue, paymentMethodValue, paymentPartsTotal } from '../utils/paymentParts.js'
 
 const paymentPopulate = [
@@ -164,7 +165,7 @@ class PaymentController {
       const depositAmount = Number(settings?.depositAmount || 0)
       const byContract = new Map()
       installments.forEach((item) => { const key = item.contract.toString(); if (!byContract.has(key)) byContract.set(key, []); byContract.get(key).push(item) })
-      const options = contracts.map((contract) => { const depositPaid = depositPaidByStudent.get(contract.student?._id?.toString()) || 0; return { ...contract, installments: byContract.get(contract._id.toString()) || [], balance: (byContract.get(contract._id.toString()) || []).reduce((sum, item) => sum + Math.max(0, item.amount - item.paidAmount), 0), depositAmount, depositPaid, depositBalance: Math.max(0, depositAmount - depositPaid) } })
+      const options = contracts.map((contract) => { const depositPaid = depositPaidByStudent.get(contract.student?._id?.toString()) || 0; const effectiveDepositAmount = contractDepositAmount(contract, depositAmount); return { ...contract, installments: byContract.get(contract._id.toString()) || [], balance: (byContract.get(contract._id.toString()) || []).reduce((sum, item) => sum + Math.max(0, item.amount - item.paidAmount), 0), depositAmount: effectiveDepositAmount, depositPaid, depositBalance: Math.max(0, effectiveDepositAmount - depositPaid) } })
       return ApiResponse.ok(res, { contracts: options, depositAmount })
     } catch (error) { return next(error) }
   }
@@ -253,7 +254,7 @@ class PaymentController {
       const upcoming = activeInstallments.filter((item) => new Date(item.dueDate) > todayEnd).reduce((sum, item) => sum + Math.max(0, item.amount - item.paidAmount), 0)
       const overdue = activeInstallments.reduce((sum, item) => sum + (new Date(item.dueDate) < todayStart ? Math.max(0, item.amount - item.paidAmount) : 0), 0)
       const settings = await GeneralSetting.findOne({ key: 'general' }).lean()
-      const depositAmount = Number(settings?.depositAmount || 0)
+      const depositAmount = studentDepositAmount(contracts.filter((contract) => contract.status === 'active'), settings?.depositAmount)
       const depositPaid = payments.filter((payment) => payment.paymentPurpose === 'deposit' && !payment.cancelledAt && payment.status !== 'cancelled').reduce((sum, payment) => sum + payment.amount, 0)
       return ApiResponse.ok(res, { contracts, installments: sortedInstallments, payments, summary: { total, paid, debt, overdue, upcoming, paymentCount: payments.filter((payment) => !payment.cancelledAt && payment.status !== 'cancelled').length, depositAmount, depositPaid, depositDebt: Math.max(0, depositAmount - depositPaid) } })
     } catch (error) { return next(error) }
@@ -287,7 +288,7 @@ class PaymentController {
         if (paymentPurpose === 'deposit') {
           const settings = await GeneralSetting.findOne({ key: 'general' }).session(session).lean()
           const [depositRow] = await Payment.aggregate([{ $match: { student: new mongoose.Types.ObjectId(studentId), paymentPurpose: 'deposit', status: { $ne: 'cancelled' }, cancelledAt: null } }, { $group: { _id: null, paid: { $sum: '$amount' } } }]).session(session)
-          balance = Math.max(0, Number(settings?.depositAmount || 0) - Number(depositRow?.paid || 0))
+          balance = Math.max(0, contractDepositAmount(contract, settings?.depositAmount) - Number(depositRow?.paid || 0))
         } else balance = Math.max(0, installment.amount - installment.paidAmount)
         if (amount > balance) throw Object.assign(new Error(`Maksimal to‘lov: ${balance.toLocaleString('uz-UZ')} so‘m`), { paymentValidation: true })
         if (paymentParts.some((part) => part.fundHolder === 'cashier')) {
@@ -338,7 +339,7 @@ class PaymentController {
         if (isDeposit) {
           const settings = await GeneralSetting.findOne({ key: 'general' }).session(session).lean()
           const [depositRow] = await Payment.aggregate([{ $match: { _id: { $ne: payment._id }, student: payment.student, paymentPurpose: 'deposit', status: { $ne: 'cancelled' }, cancelledAt: null } }, { $group: { _id: null, paid: { $sum: '$amount' } } }]).session(session)
-          available = Math.max(0, Number(settings?.depositAmount || 0) - Number(depositRow?.paid || 0))
+          available = Math.max(0, contractDepositAmount(await StudentContract.findById(payment.contract).session(session), settings?.depositAmount) - Number(depositRow?.paid || 0))
         } else available = Math.max(0, installment.amount - installment.paidAmount) + (installmentChanged ? 0 : allocation.amount)
         if (amount > available) throw Object.assign(new Error(`Maksimal to‘lov: ${available.toLocaleString('uz-UZ')} so‘m`), { paymentValidation: true })
         if (installment) {

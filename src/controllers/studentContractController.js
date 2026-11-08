@@ -21,6 +21,10 @@ class StudentContractController {
       endDate: body.endDate,
       paymentType: body.paymentType || "monthly",
       paymentAmount: Number(body.paymentAmount),
+      depositEnabled: (body.paymentType || "monthly") === "daily" && body.depositEnabled === true,
+      depositAmount: (body.paymentType || "monthly") === "daily" && body.depositEnabled === true
+        ? Number(body.depositAmount)
+        : 0,
       status: body.status || "active",
       note: String(body.note || "").trim(),
     };
@@ -375,6 +379,8 @@ class StudentContractController {
       payload.status = "active";
       if (!Number.isFinite(payload.paymentAmount) || payload.paymentAmount <= 0)
         return ApiResponse.badRequest(res, "To‘lov summasi 0 dan katta bo‘lishi kerak");
+      if (payload.depositEnabled && (!Number.isFinite(payload.depositAmount) || payload.depositAmount <= 0))
+        return ApiResponse.badRequest(res, "Deposit summasi 0 dan katta bo‘lishi kerak");
       if (!mongoose.isValidObjectId(payload.student))
         return ApiResponse.badRequest(res, "Talabani to‘g‘ri tanlang");
       if (await this.validateRoom(payload, res)) return undefined;
@@ -402,6 +408,8 @@ class StudentContractController {
       const payload = this.cleanPayload(req.body);
       if (!Number.isFinite(payload.paymentAmount) || payload.paymentAmount <= 0)
         return ApiResponse.badRequest(res, "To‘lov summasi 0 dan katta bo‘lishi kerak");
+      if (payload.depositEnabled && (!Number.isFinite(payload.depositAmount) || payload.depositAmount <= 0))
+        return ApiResponse.badRequest(res, "Deposit summasi 0 dan katta bo‘lishi kerak");
       if (existing.status === "cancelled")
         return ApiResponse.conflict(
           res,

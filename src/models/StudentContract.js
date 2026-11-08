@@ -10,6 +10,8 @@ const studentContractSchema = new mongoose.Schema(
     endDate: { type: Date, required: true },
     paymentType: { type: String, enum: ['daily', 'monthly'], default: 'monthly' },
     paymentAmount: { type: Number, required: true, min: 1 },
+    depositEnabled: { type: Boolean, default: false },
+    depositAmount: { type: Number, min: 0, default: 0 },
     durationDays: { type: Number, required: true, min: 0 },
     billingQuantity: { type: Number, required: true, min: 0 },
     totalAmount: { type: Number, required: true, min: 0 },

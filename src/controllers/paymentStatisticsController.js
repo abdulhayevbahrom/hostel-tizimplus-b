@@ -41,6 +41,9 @@ const groupFloorsFromRooms = (rooms) => {
   })
   return [...groups.values()].map(({ rooms: floorRooms, ...floor }) => {
     const studentCount = floorRooms.reduce((total, room) => total + room.studentCount, 0)
+    const paidStudentCount = floorRooms.reduce((total, room) => total + room.paidCount, 0)
+    const remainingStudentCount = Math.max(0, studentCount - paidStudentCount)
+    const paidStudentRate = studentCount ? Math.round((paidStudentCount / studentCount) * 100) : null
     const paidRoomCount = floorRooms.filter((room) => room.debtAmount <= 0).length
     const remainingRoomCount = floorRooms.length - paidRoomCount
     const paidRoomRate = floorRooms.length ? Math.round((paidRoomCount / floorRooms.length) * 100) : null
@@ -50,7 +53,7 @@ const groupFloorsFromRooms = (rooms) => {
     const pendingRoomCount = floorRooms.length - lateRoomCount - almostOnTimeRoomCount - onTimeRoomCount
     const timingDecided = onTimeRoomCount + almostOnTimeRoomCount + lateRoomCount
     const onTimeRoomRate = timingDecided ? Math.round((onTimeRoomCount / timingDecided) * 100) : null
-    return { ...floor, roomCount: floorRooms.length, studentCount, paidRoomCount, remainingRoomCount, paidRoomRate, onTimeRoomCount, almostOnTimeRoomCount, lateRoomCount, pendingRoomCount, onTimeRoomRate }
+    return { ...floor, roomCount: floorRooms.length, studentCount, paidStudentCount, remainingStudentCount, paidStudentRate, paidRoomCount, remainingRoomCount, paidRoomRate, onTimeRoomCount, almostOnTimeRoomCount, lateRoomCount, pendingRoomCount, onTimeRoomRate }
   }).sort((a, b) => `${a.block} ${a.floor}`.localeCompare(`${b.block} ${b.floor}`, 'uz', { numeric: true, sensitivity: 'base' }))
 }
 

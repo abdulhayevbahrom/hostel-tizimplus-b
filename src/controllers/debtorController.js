@@ -90,7 +90,8 @@ class DebtorController {
       const limit = 30
       const totalPages = Math.max(1, Math.ceil(total / limit))
       const page = Math.min(Math.max(1, Number.parseInt(req.query.page, 10) || 1), totalPages)
-      const paginatedDebtors = debtors.slice((page - 1) * limit, page * limit)
+      const exportAll = req.query.export === '1'
+      const paginatedDebtors = exportAll ? debtors : debtors.slice((page - 1) * limit, page * limit)
       const scheduledAmount = reportInstallments.reduce((sum, item) => sum + item.amount, 0)
       const paidAmount = reportInstallments.reduce((sum, item) => sum + item.paidAmount, 0)
       const outstanding = debtors.reduce((sum, item) => sum + item.totalDebt, 0)

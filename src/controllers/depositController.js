@@ -3,6 +3,7 @@ import { GeneralSetting } from '../models/GeneralSetting.js'
 import { Payment } from '../models/Payment.js'
 import { StudentContract } from '../models/StudentContract.js'
 import { ApiResponse } from '../utils/response.js'
+import { contractDepositAmount } from '../utils/contractDeposit.js'
 
 class DepositController {
   list = async (req, res, next) => {
@@ -29,11 +30,13 @@ class DepositController {
       validContracts.forEach((contract) => {
         const studentId = contract.student.id
         if (rowsByStudent.has(studentId)) return
+        const effectiveDepositAmount = contractDepositAmount(contract, depositAmount)
+        if (effectiveDepositAmount <= 0) return
         const payment = paymentsByStudent.get(studentId)
         const depositPaid = Number(payment?.paid || 0)
-        const depositRemaining = Math.max(0, depositAmount - depositPaid)
+        const depositRemaining = Math.max(0, effectiveDepositAmount - depositPaid)
         const depositStatus = depositRemaining <= 0 ? 'paid' : depositPaid > 0 ? 'partial' : 'unpaid'
-        rowsByStudent.set(studentId, { student: contract.student, contract, room: contract.room, depositAmount, depositPaid, depositRemaining, depositStatus, lastPaidAt: payment?.lastPaidAt || null })
+        rowsByStudent.set(studentId, { student: contract.student, contract, room: contract.room, depositAmount: effectiveDepositAmount, depositPaid, depositRemaining, depositStatus, lastPaidAt: payment?.lastPaidAt || null })
       })
       let scopedRows = [...rowsByStudent.values()]
       if (roomFilter) scopedRows = scopedRows.filter((row) => row.room?.id === roomFilter)
