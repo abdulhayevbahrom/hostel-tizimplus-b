@@ -31,7 +31,6 @@ export async function getPaymentProgress(req, res, next) {
     const paidByInstallment = allocatedProgressPayments(payments)
     const rows = usable.flatMap(({ item, dates }) => {
       const paidAmount = Math.min(item.amount, paidByInstallment.get(item.id) || 0)
-      if (paidAmount <= 0 && item.contract.status !== 'active') return []
       return [{ id: item.id, student: item.student, room: item.contract.room, contractNumber: item.contract.contractNumber,
         paymentType: item.contract.paymentType, amount: item.amount, paidAmount, ...dates }]
     })

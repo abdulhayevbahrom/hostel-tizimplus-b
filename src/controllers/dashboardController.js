@@ -154,7 +154,7 @@ class DashboardController {
           .populate({ path: 'student', select: 'isDeleted deletedAt', options: { withDeleted: true } })
           .lean() : [],
         Room.find().setOptions({ withDeleted: true }).select('roomNumber block floor capacity status createdAt isDeleted deletedAt').lean(),
-        StudentContract.find({ startDate: { $lt: nextYearStart }, endDate: { $gte: yearStart } })
+        StudentContract.find({ $or: [{ startDate: { $lt: nextYearStart }, endDate: { $gte: yearStart } }, { startDate: { $lte: todayEndInTashkent }, endDate: { $gte: tashkentDayStart(now) } }] })
           .setOptions({ withDeleted: true }).select('student room startDate endDate status cancelledAt isDeleted deletedAt')
           .populate({ path: 'student', select: 'isDeleted deletedAt', options: { withDeleted: true } }).lean(),
         GeneralSetting.findOne({ key: 'general' }).select('vacantBedDailyRate').lean(),

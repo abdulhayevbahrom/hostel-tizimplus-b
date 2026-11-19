@@ -115,6 +115,29 @@ test('payment filters classify full, partial and unpaid amounts independently of
   assert.equal(calculatePaymentProgress(base, atDay(10)).paymentStatus, 'paid')
   const partial = calculatePaymentProgress({ ...base, paidAmount: 700000 }, atDay(25))
   assert.equal(partial.paymentStatus, 'partial')
-  assert.equal(partial.status, 'completed')
+  assert.equal(partial.status, 'overdue')
   assert.equal(calculatePaymentProgress({ ...base, paidAmount: 0 }, atDay(10)).paymentStatus, 'unpaid')
+})
+
+test('unpaid service accrues as a negative exposure from the period start', () => {
+  const row = calculatePaymentProgress({ ...base, paidAmount: 0 }, atDay(10))
+  assert.equal(row.unpaidServiceAmount, 400000)
+  assert.equal(row.overdueTime, 10 * DAY)
+  assert.equal(row.earned, 0)
+})
+test('partial payments accrue exposure only after the covered duration is exhausted', () => {
+  const partial = { ...base, paidAmount: 700000 }
+  assert.equal(calculatePaymentProgress(partial, atDay(10)).unpaidServiceAmount, 0)
+  const row = calculatePaymentProgress(partial, atDay(20))
+  assert.equal(row.unpaidServiceAmount, 100000)
+  assert.equal(row.overdueTime, 2.5 * DAY)
+  assert.equal(row.status, 'overdue')
+})
+test('exposure stops at the recorded period end and does not accrue before the stay', () => {
+  const unpaid = { ...base, paidAmount: 0 }
+  assert.equal(calculatePaymentProgress(unpaid, atDay(-2)).unpaidServiceAmount, 0)
+  assert.equal(calculatePaymentProgress(unpaid, atDay(-2)).overdueTime, 0)
+  assert.equal(calculatePaymentProgress(unpaid, atDay(40)).unpaidServiceAmount, 1200000)
+  assert.equal(calculatePaymentProgress(unpaid, atDay(40)).overdueTime, 30 * DAY)
+  assert.equal(calculatePaymentProgress(base, atDay(40)).unpaidServiceAmount, 0)
 })

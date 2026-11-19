@@ -15,6 +15,20 @@ export function vacancyLoss({ period, todayKey, dailyRate, rooms, contracts }) {
     contractsByRoom.get(key).push(contract)
   }
   const eligibleRooms = rooms.filter((room) => room.status === 'available')
+  const vacantOnDay = (room, start, end) => {
+    if ((room.createdAt && new Date(room.createdAt) > end) || ended(room, end)) return 0
+    const occupied = new Set()
+    for (const contract of contractsByRoom.get(id(room)) || []) {
+      if (!contract.student || new Date(contract.startDate) > end || new Date(contract.endDate) < start) continue
+      if (contract.status === 'cancelled' && (!contract.cancelledAt || new Date(contract.cancelledAt) <= end)) continue
+      if (ended(contract, end) || ended(contract.student, end)) continue
+      occupied.add(id(contract.student))
+    }
+    return Math.max(0, room.capacity - occupied.size)
+  }
+  const todayStart = parsePaymentDate(todayKey)
+  const todayEnd = new Date(todayStart.getTime() + DAY_MS - 1)
+  const todayVacantBeds = eligibleRooms.reduce((sum, room) => sum + vacantOnDay(room, todayStart, todayEnd), 0)
   const months = Array.from({ length: 12 }, (_, index) => {
     const monthKey = `${year}-${String(index + 1).padStart(2, '0')}`
     const calendarDays = new Date(Date.UTC(year, index + 1, 0)).getUTCDate()
@@ -22,20 +36,12 @@ export function vacancyLoss({ period, todayKey, dailyRate, rooms, contracts }) {
     const roomRows = eligibleRooms.map((room) => {
       let vacantBedDays = 0
       let capacityBedDays = 0
-      const residents = contractsByRoom.get(id(room)) || []
       for (let day = 1; day <= days; day += 1) {
         const start = parsePaymentDate(`${monthKey}-${String(day).padStart(2, '0')}`)
         const end = new Date(start.getTime() + DAY_MS - 1)
         if ((room.createdAt && new Date(room.createdAt) > end) || ended(room, end)) continue
-        const occupied = new Set()
-        for (const contract of residents) {
-          if (!contract.student || new Date(contract.startDate) > end || new Date(contract.endDate) < start) continue
-          if (contract.status === 'cancelled' && (!contract.cancelledAt || new Date(contract.cancelledAt) <= end)) continue
-          if (ended(contract, end) || ended(contract.student, end)) continue
-          occupied.add(id(contract.student))
-        }
         capacityBedDays += room.capacity
-        vacantBedDays += Math.max(0, room.capacity - occupied.size)
+        vacantBedDays += vacantOnDay(room, start, end)
       }
       return { id: id(room), roomNumber: room.roomNumber, block: room.block, floor: room.floor, capacityBedDays, vacantBedDays, loss: vacantBedDays * rate }
     }).filter((room) => room.capacityBedDays > 0)
@@ -52,6 +58,15 @@ export function vacancyLoss({ period, todayKey, dailyRate, rooms, contracts }) {
     floor.loss += room.loss
   }
   return {
+    live: {
+      todayStart: todayStart.toISOString(),
+      todayVacantBeds,
+      todayFullLoss: todayVacantBeds * rate,
+      monthStart: parsePaymentDate(`${period}-01`).toISOString(),
+      monthEnd: new Date(Date.UTC(year, Number(period.slice(5)), 1) - 5 * 60 * 60 * 1000).toISOString(),
+      completedDaysLoss: selected.loss - (period === todayKey.slice(0, 7) ? todayVacantBeds * rate : 0),
+      includesToday: period === todayKey.slice(0, 7),
+    },
     dailyRate: rate,
     period,
     days: selected.days,

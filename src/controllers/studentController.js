@@ -228,18 +228,6 @@ class StudentController {
       const limit = 25
       const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1)
       const matchingStudentIds = await Student.distinct('_id', filter)
-      const total = matchingStudentIds.length
-      const totalPages = Math.max(1, Math.ceil(total / limit))
-      const currentPage = Math.min(page, totalPages)
-      const students = await Student.find(filter)
-        .populate('university', 'name shortName')
-        .populate('faculty', 'name')
-        .sort({ createdAt: -1 })
-        .skip((currentPage - 1) * limit)
-        .limit(limit)
-      const activeContracts = await StudentContract.find({ student: { $in: students.map((student) => student._id) }, status: 'active', startDate: { $lte: todayEnd }, endDate: { $gte: todayStart } })
-        .select('student room endDate')
-        .populate('room', 'roomNumber block floor')
       const statisticsContractIds = await StudentContract.distinct('_id', {
         student: { $in: matchingStudentIds },
         status: { $ne: 'cancelled' },
@@ -270,9 +258,11 @@ class StudentController {
         const allocations = allocationsByInstallment.get(installment._id.toString()) || []
         let paidAmount = 0
         let completedAt = null
+        let lastPaidAt = null
         allocations.forEach((allocation) => {
           paidAmount += allocation.amount
           if (!completedAt && paidAmount >= installment.amount) completedAt = allocation.paidAt
+          if (!lastPaidAt || new Date(allocation.paidAt) > new Date(lastPaidAt)) lastPaidAt = allocation.paidAt
         })
         const isPaid = paidAmount >= installment.amount
         const payment = paymentTimingDetails({
@@ -289,13 +279,33 @@ class StudentController {
         if (!previous || paymentStatusPriority[payment.status] > paymentStatusPriority[previous.status]
           || (payment.status === previous.status && payment.status === 'late' && payment.days > previous.days)
           || (payment.status === previous.status && payment.status === 'pending' && payment.days < previous.days)) {
-          currentPaymentByStudent.set(studentId, payment)
+          currentPaymentByStudent.set(studentId, { ...payment, dueDate: installment.dueDate, lastPaidAt })
         }
       })
       const paymentSummary = { fullyPaid: 0, late: 0, pending: 0 }
       for (const studentId of currentPaymentByStudent.keys()) {
         paymentSummary[unpaidStatusByStudent.get(studentId) ?? 'fullyPaid'] += 1
       }
+      const paymentStatus = ['fullyPaid', 'late', 'pending'].includes(req.query.paymentStatus)
+        ? req.query.paymentStatus
+        : null
+      const filteredStudentIds = paymentStatus
+        ? matchingStudentIds.filter((id) => currentPaymentByStudent.has(id.toString())
+          && (unpaidStatusByStudent.get(id.toString()) ?? 'fullyPaid') === paymentStatus)
+        : matchingStudentIds
+      if (paymentStatus) filter.$and = [...(filter.$and || []), { _id: { $in: filteredStudentIds } }]
+      const total = filteredStudentIds.length
+      const totalPages = Math.max(1, Math.ceil(total / limit))
+      const currentPage = Math.min(page, totalPages)
+      const students = await Student.find(filter)
+        .populate('university', 'name shortName')
+        .populate('faculty', 'name')
+        .sort({ createdAt: -1 })
+        .skip((currentPage - 1) * limit)
+        .limit(limit)
+      const activeContracts = await StudentContract.find({ student: { $in: students.map((student) => student._id) }, status: 'active', startDate: { $lte: todayEnd }, endDate: { $gte: todayStart } })
+        .select('student room createdAt startDate endDate')
+        .populate('room', 'roomNumber block floor')
       const studentsWithContract = new Set((await StudentContract.distinct('student', {
         student: { $in: students.map((student) => student._id) },
         status: { $ne: 'cancelled' },
@@ -304,7 +314,7 @@ class StudentController {
       const rows = students.map((student) => {
         const activeContract = activeContractByStudent.get(student.id)
         const payment = currentPaymentByStudent.get(student.id)
-        return { ...student.toJSON(), hasContract: studentsWithContract.has(student.id), activeContractEndDate: activeContract?.endDate || null, activeRoom: activeContract?.room || null, currentPaymentStatus: payment?.status ?? null, currentPaymentDays: payment?.days ?? null }
+        return { ...student.toJSON(), hasContract: studentsWithContract.has(student.id), activeContractCreatedAt: activeContract?.createdAt || null, activeContractStartDate: activeContract?.startDate || null, activeContractEndDate: activeContract?.endDate || null, activeRoom: activeContract?.room || null, currentPaymentStatus: payment?.status ?? null, currentPaymentDays: payment?.days ?? null, currentPaymentDueDate: payment?.dueDate ?? null, currentPaymentLastPaidAt: payment?.lastPaidAt ?? null }
       })
       return ApiResponse.ok(res, { students: rows, paymentPeriod, paymentSummary, pagination: { page: currentPage, limit, total, totalPages } })
     } catch (error) { return next(error) }
