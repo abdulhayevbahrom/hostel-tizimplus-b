@@ -8,7 +8,7 @@ import { Notification } from '../models/Notification.js'
 import { Student } from '../models/Student.js'
 import { GeneralSetting } from '../models/GeneralSetting.js'
 import { ApiResponse } from '../utils/response.js'
-import { periodKeyInTashkent, tashkentDayEnd, tashkentDayStart } from '../utils/paymentTime.js'
+import { parsePaymentDate, periodKeyInTashkent, tashkentDayEnd, tashkentDayStart } from '../utils/paymentTime.js'
 import { contractDepositAmount, studentDepositAmount } from '../utils/contractDeposit.js'
 import { buildPaymentParts, effectivePaymentParts, PAYMENT_METHODS, paymentFundHolderValue, paymentMethodValue, paymentPartsTotal } from '../utils/paymentParts.js'
 
@@ -23,15 +23,6 @@ const paymentPopulate = [
 ]
 
 const snapshot = (payment) => ({ amount: payment.amount, method: payment.method, fundHolder: payment.fundHolder || 'organization', paymentParts: effectivePaymentParts(payment), cashSession: payment.cashSession || null, paymentDate: payment.paymentDate, note: payment.note || '' })
-
-const parsePaymentDate = (value) => {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ''))
-  if (!match) return null
-  const [, year, month, day] = match.map(Number)
-  const calendarDate = new Date(Date.UTC(year, month - 1, day))
-  if (calendarDate.getUTCFullYear() !== year || calendarDate.getUTCMonth() !== month - 1 || calendarDate.getUTCDate() !== day) return null
-  return new Date(`${value}T00:00:00+05:00`)
-}
 
 const effectivePaymentDate = (payment) => payment.paymentDate || payment.createdAt
 

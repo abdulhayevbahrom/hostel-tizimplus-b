@@ -79,7 +79,7 @@ class DebtorController {
         const lastPayment = paymentHistory[0]
         const deadline = deadlinesByStudent.get(item.student.id)
         const allPeriods = periodsByStudent.get(item.student.id) || item.periods
-        return { ...item, contracts: [...item.contracts.values()], periods: allPeriods, debtPeriods: item.periods, periodCount: item.periods.length, oldestDueDate: item.periods[0]?.dueDate, lastPaymentAt: lastPayment?.paymentDate || lastPayment?.createdAt || null, lastPaymentAmount: lastPayment?.amount || 0, paymentHistory, debtStatus: item.paidTowardsDebt > 0 ? 'partial' : 'unpaid', paymentDeadline: deadline?.deadline || null, deadlineSetBy: deadline?.setBy || null, isDeadlineReached: Boolean(deadline && new Date(deadline.deadline) <= todayEnd) }
+        return { ...item, contracts: [...item.contracts.values()], periods: allPeriods, debtPeriods: item.periods, periodCount: item.periods.length, oldestDueDate: item.periods[0]?.dueDate, lastPaymentAt: lastPayment?.paymentDate || lastPayment?.createdAt || null, lastPaymentAmount: lastPayment?.amount || 0, paymentHistory, debtStatus: item.paidTowardsDebt > 0 ? 'partial' : 'unpaid', paymentDeadline: deadline?.deadline || null, deadlineSetBy: deadline?.setBy || null, isDeadlineReached: Boolean(deadline && new Date(deadline.deadline) <= todayEnd), isPaymentDueReached: item.periods.some((period) => period.debt > 0 && new Date(period.dueDate) <= todayEnd) }
       }).sort((a, b) => b.totalDebt - a.totalDebt)
       if (roomFilter) debtors = debtors.filter((item) => item.contracts.some((contract) => contract.room?.id === roomFilter))
       if (status !== 'all') debtors = debtors.filter((item) => status === 'overdue' ? item.overdueDebt > 0 : item.debtStatus === status)

@@ -1,3 +1,5 @@
+import { GeneralSetting } from '../models/GeneralSetting.js'
+import { vacancyLoss } from '../utils/vacancyLoss.js'
 import { Attendance } from '../models/Attendance.js'
 import { ContractInstallment } from '../models/ContractInstallment.js'
 import { Employee } from '../models/Employee.js'
@@ -11,6 +13,8 @@ import { Student } from '../models/Student.js'
 import { StudentContract } from '../models/StudentContract.js'
 import { ApiResponse } from '../utils/response.js'
 import { unwindPaymentParts } from '../utils/paymentParts.js'
+import { TASHKENT_TIME_ZONE, tashkentDayEnd, tashkentDayStart } from '../utils/paymentTime.js'
+import { studentExpenseTrend, yearlyStudentCounts } from '../utils/studentExpenseTrend.js'
 
 const localKeys = () => {
   const now = new Date()
@@ -68,8 +72,13 @@ class DashboardController {
       const now = current.now
       const dayKey = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date || '')) ? String(req.query.date) : current.dayKey
       const selectedDate = new Date(`${dayKey}T00:00:00`)
-      const monthStart = new Date(selectedYear, selectedMonth - 1, 1)
-      const monthEnd = new Date(selectedYear, selectedMonth, 1)
+      const monthStart = tashkentDayStart(new Date(Date.UTC(selectedYear, selectedMonth - 1, 1)))
+      const monthEnd = tashkentDayStart(new Date(Date.UTC(selectedYear, selectedMonth, 1)))
+      const todayEndInTashkent = tashkentDayEnd(now)
+      const todayInTashkent = todayEndInTashkent.toISOString().slice(0, 10)
+      const yearStart = tashkentDayStart(new Date(Date.UTC(selectedYear, 0, 1)))
+      const nextYearStart = tashkentDayStart(new Date(Date.UTC(selectedYear + 1, 0, 1)))
+      const chartEnd = nextYearStart <= todayEndInTashkent ? nextYearStart : todayEndInTashkent
       const dayStart = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate())
       const dayEnd = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate() + 1)
       const selectedDayEnd = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate(), 23, 59, 59, 999)
@@ -107,6 +116,10 @@ class DashboardController {
         dailyExpenses,
         dailyPaymentMethods,
         dailyFinePaymentMethods,
+        yearlyResidents,
+        vacancyRooms,
+        vacancyContracts,
+        generalSettings,
       ] = await Promise.all([
         Room.find().select('capacity status'),
         StudentContract.find(activeContractFilter).select('student room'),
@@ -133,9 +146,18 @@ class DashboardController {
         FinePayment.aggregate([{ $match: { ...validStudentFilter, createdAt: { $gte: monthStart, $lt: monthEnd } } }, { $group: { _id: '$method', amount: { $sum: '$amount' }, count: { $sum: 1 } } }]),
         Payment.aggregate([...paymentDateStages(financialPaymentFilter, monthStart, monthEnd), { $group: { _id: { $dayOfMonth: { date: '$_dashboardPaymentDate', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' } } }]),
         FinePayment.aggregate([{ $match: { ...validStudentFilter, createdAt: { $gte: monthStart, $lt: monthEnd } } }, { $group: { _id: { $dayOfMonth: { date: '$createdAt', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' } } }]),
-        Expense.aggregate([...expenseDateStages({}, monthStart, monthEnd), { $group: { _id: { $dayOfMonth: { date: '$_dashboardExpenseDate', timezone: 'Asia/Tashkent' } }, amount: { $sum: '$amount' } } }]),
+        Expense.aggregate([...expenseDateStages({}, monthStart, monthEnd), { $group: { _id: { $dayOfMonth: { date: '$_dashboardExpenseDate', timezone: TASHKENT_TIME_ZONE } }, amount: { $sum: '$amount' } } }]),
         Payment.aggregate([...paymentDateStages(financialPaymentFilter, dayStart, dayEnd), ...unwindPaymentParts, { $group: { _id: '$_effectivePaymentParts.method', amount: { $sum: '$_effectivePaymentParts.amount' }, payments: { $addToSet: '$_id' } } }, { $project: { amount: 1, count: { $size: '$payments' } } }]),
         FinePayment.aggregate([{ $match: { ...validStudentFilter, createdAt: { $gte: dayStart, $lt: dayEnd } } }, { $group: { _id: '$method', amount: { $sum: '$amount' }, count: { $sum: 1 } } }]),
+        chartEnd >= yearStart ? StudentContract.find({ startDate: { $lte: chartEnd }, endDate: { $gte: yearStart } })
+          .select('student startDate endDate status cancelledAt')
+          .populate({ path: 'student', select: 'isDeleted deletedAt', options: { withDeleted: true } })
+          .lean() : [],
+        Room.find().setOptions({ withDeleted: true }).select('roomNumber block floor capacity status createdAt isDeleted deletedAt').lean(),
+        StudentContract.find({ startDate: { $lt: nextYearStart }, endDate: { $gte: yearStart } })
+          .setOptions({ withDeleted: true }).select('student room startDate endDate status cancelledAt isDeleted deletedAt')
+          .populate({ path: 'student', select: 'isDeleted deletedAt', options: { withDeleted: true } }).lean(),
+        GeneralSetting.findOne({ key: 'general' }).select('vacantBedDailyRate').lean(),
       ])
 
       const activeStudentIds = new Set(activeContracts.map((item) => item.student.toString()))
@@ -179,6 +201,10 @@ class DashboardController {
       const dailyFineIncomeMap = new Map(dailyFineIncome.map((item) => [item._id, item.amount]))
       const dailyExpenseMap = new Map(dailyExpenses.map((item) => [item._id, item.amount]))
       const dailyTrends = Array.from({ length: daysInMonth }, (_, index) => ({ day: index + 1, income: (dailyIncomeMap.get(index + 1) || 0) + (dailyFineIncomeMap.get(index + 1) || 0), expenses: dailyExpenseMap.get(index + 1) || 0 }))
+      const chartMonth = todayInTashkent.slice(0, 7)
+      const elapsedDays = monthKey < chartMonth ? daysInMonth : monthKey === chartMonth ? Number(todayInTashkent.slice(8)) : 0
+      const monthlyResidents = yearlyResidents.filter((contract) => contract.startDate < monthEnd && contract.endDate >= monthStart)
+      const studentExpenses = studentExpenseTrend({ period: monthKey, days: elapsedDays, expenses: dailyExpenseMap, contracts: monthlyResidents })
       const mergeMethods = (primary, secondary) => {
         const methodMap = new Map()
         ;[...primary, ...secondary].forEach((item) => {
@@ -209,6 +235,9 @@ class DashboardController {
         transactions,
         trends,
         dailyTrends,
+        studentExpenses,
+        vacancyLoss: vacancyLoss({ period: monthKey, todayKey: todayInTashkent, dailyRate: generalSettings?.vacantBedDailyRate, rooms: vacancyRooms, contracts: vacancyContracts }),
+        yearlyStudentCounts: yearlyStudentCounts(selectedYear, todayInTashkent, yearlyResidents),
         paymentMethods: mergeMethods(paymentMethods, finePaymentMethods),
         dailyPaymentMethods: mergeMethods(dailyPaymentMethods, dailyFinePaymentMethods),
         topDebtors,

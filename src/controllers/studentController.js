@@ -9,7 +9,7 @@ import { StudentContract } from '../models/StudentContract.js'
 import { University } from '../models/University.js'
 import { ApiResponse } from '../utils/response.js'
 import { uploadImages } from '../utils/imgbb.js'
-import { paymentTimingStatus, periodKeyInTashkent } from '../utils/paymentTime.js'
+import { paymentTimingDetails, periodKeyInTashkent } from '../utils/paymentTime.js'
 
 class StudentController {
   history = async (req, res, next) => {
@@ -227,7 +227,8 @@ class StudentController {
       }
       const limit = 25
       const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1)
-      const total = await Student.countDocuments(filter)
+      const matchingStudentIds = await Student.distinct('_id', filter)
+      const total = matchingStudentIds.length
       const totalPages = Math.max(1, Math.ceil(total / limit))
       const currentPage = Math.min(page, totalPages)
       const students = await Student.find(filter)
@@ -240,47 +241,61 @@ class StudentController {
         .select('student room endDate')
         .populate('room', 'roomNumber block floor')
       const statisticsContractIds = await StudentContract.distinct('_id', {
-        student: { $in: students.map((student) => student._id) },
+        student: { $in: matchingStudentIds },
         status: { $ne: 'cancelled' },
       })
       const currentInstallments = await ContractInstallment.find({
         periodKey: paymentPeriod,
         contract: { $in: statisticsContractIds },
-      }).sort({ dueDate: 1 })
+        amount: { $gt: 0 },
+      }).select('student amount dueDate updatedAt').sort({ dueDate: 1 }).lean()
       const installmentIds = currentInstallments.map((installment) => installment._id)
+      const installmentIdSet = new Set(installmentIds.map((id) => id.toString()))
       const payments = installmentIds.length ? await Payment.find({
         status: 'active',
         cancelledAt: null,
         'allocations.installment': { $in: installmentIds },
-      }).select('allocations paymentDate createdAt').sort({ paymentDate: 1, createdAt: 1 }) : []
+      }).select('allocations paymentDate createdAt').sort({ paymentDate: 1, createdAt: 1 }).lean() : []
       const allocationsByInstallment = new Map()
       payments.forEach((payment) => payment.allocations.forEach((allocation) => {
         const installmentId = allocation.installment.toString()
+        if (!installmentIdSet.has(installmentId)) return
         if (!allocationsByInstallment.has(installmentId)) allocationsByInstallment.set(installmentId, [])
         allocationsByInstallment.get(installmentId).push({ amount: allocation.amount, paidAt: payment.paymentDate || payment.createdAt })
       }))
       const paymentStatusPriority = { late: 4, almostOnTime: 3, pending: 2, onTime: 1 }
-      const currentPaymentStatusByStudent = new Map()
+      const currentPaymentByStudent = new Map()
+      const unpaidStatusByStudent = new Map()
       currentInstallments.forEach((installment) => {
-        const allocations = allocationsByInstallment.get(installment.id) || []
+        const allocations = allocationsByInstallment.get(installment._id.toString()) || []
         let paidAmount = 0
         let completedAt = null
         allocations.forEach((allocation) => {
           paidAmount += allocation.amount
           if (!completedAt && paidAmount >= installment.amount) completedAt = allocation.paidAt
         })
-        const paymentStatus = paymentTimingStatus({
+        const isPaid = paidAmount >= installment.amount
+        const payment = paymentTimingDetails({
           dueDate: installment.dueDate,
           completedAt: completedAt || installment.updatedAt,
-          isPaid: paidAmount >= installment.amount,
+          isPaid,
           now,
         })
         const studentId = installment.student.toString()
-        const previousStatus = currentPaymentStatusByStudent.get(studentId)
-        if (!previousStatus || paymentStatusPriority[paymentStatus] > paymentStatusPriority[previousStatus]) {
-          currentPaymentStatusByStudent.set(studentId, paymentStatus)
+        if (!isPaid && unpaidStatusByStudent.get(studentId) !== 'late') {
+          unpaidStatusByStudent.set(studentId, payment.status)
+        }
+        const previous = currentPaymentByStudent.get(studentId)
+        if (!previous || paymentStatusPriority[payment.status] > paymentStatusPriority[previous.status]
+          || (payment.status === previous.status && payment.status === 'late' && payment.days > previous.days)
+          || (payment.status === previous.status && payment.status === 'pending' && payment.days < previous.days)) {
+          currentPaymentByStudent.set(studentId, payment)
         }
       })
+      const paymentSummary = { fullyPaid: 0, late: 0, pending: 0 }
+      for (const studentId of currentPaymentByStudent.keys()) {
+        paymentSummary[unpaidStatusByStudent.get(studentId) ?? 'fullyPaid'] += 1
+      }
       const studentsWithContract = new Set((await StudentContract.distinct('student', {
         student: { $in: students.map((student) => student._id) },
         status: { $ne: 'cancelled' },
@@ -288,9 +303,10 @@ class StudentController {
       const activeContractByStudent = new Map(activeContracts.map((contract) => [contract.student.toString(), contract]))
       const rows = students.map((student) => {
         const activeContract = activeContractByStudent.get(student.id)
-        return { ...student.toJSON(), hasContract: studentsWithContract.has(student.id), activeContractEndDate: activeContract?.endDate || null, activeRoom: activeContract?.room || null, currentPaymentStatus: currentPaymentStatusByStudent.get(student.id) || null }
+        const payment = currentPaymentByStudent.get(student.id)
+        return { ...student.toJSON(), hasContract: studentsWithContract.has(student.id), activeContractEndDate: activeContract?.endDate || null, activeRoom: activeContract?.room || null, currentPaymentStatus: payment?.status ?? null, currentPaymentDays: payment?.days ?? null }
       })
-      return ApiResponse.ok(res, { students: rows, paymentPeriod, pagination: { page: currentPage, limit, total, totalPages } })
+      return ApiResponse.ok(res, { students: rows, paymentPeriod, paymentSummary, pagination: { page: currentPage, limit, total, totalPages } })
     } catch (error) { return next(error) }
   }
 
@@ -369,3 +385,7 @@ class StudentController {
 }
 
 export const studentController = new StudentController()
+
+
+
+

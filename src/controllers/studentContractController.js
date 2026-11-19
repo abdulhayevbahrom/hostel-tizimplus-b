@@ -84,11 +84,11 @@ class StudentContractController {
     }));
   }
 
-  async extendInstallments(contract) {
+  async updateInstallments(contract, session) {
     const desiredInstallments = buildContractInstallments(contract);
     const existingInstallments = await ContractInstallment.find({
       contract: contract._id,
-    }).setOptions({ withDeleted: true });
+    }).setOptions({ withDeleted: true }).session(session);
     const existingByIndex = new Map(
       existingInstallments.map((item) => [item.periodIndex, item]),
     );
@@ -123,25 +123,29 @@ class StudentContractController {
     existingInstallments
       .filter((item) => !desiredIndexes.has(item.periodIndex))
       .forEach((item) => {
+        // Keep the original installment available to its payment records.
+        const changes = item.paidAmount > 0
+          ? { amount: 0, status: "paid", isDeleted: false, deletedAt: null, deletedBy: null }
+          : { isDeleted: true, deletedAt: new Date() };
         operations.push({
           updateOne: {
             filter: { _id: item._id },
-            update: { $set: { isDeleted: true, deletedAt: new Date() } },
+            update: { $set: changes },
           },
         });
       });
-    if (operations.length) await ContractInstallment.bulkWrite(operations);
+    if (operations.length) await ContractInstallment.bulkWrite(operations, { session });
   }
 
-  async validateInstallmentAmounts(contract) {
+  async validateInstallmentAmounts(contract, session) {
     const desiredByIndex = new Map(
       buildContractInstallments(contract).map((item) => [item.periodIndex, item]),
     );
     const existingInstallments = await ContractInstallment.find({
       contract: contract._id,
-    }).select("periodIndex paidAmount");
+    }).select("periodIndex amount paidAmount").session(session);
     const removedPaidInstallment = existingInstallments.find(
-      (existing) => !desiredByIndex.has(existing.periodIndex) && (existing.paidAmount || 0) > 0,
+      (existing) => !desiredByIndex.has(existing.periodIndex) && existing.amount > 0 && (existing.paidAmount || 0) > 0,
     );
     if (removedPaidInstallment)
       return "To‘lov qilingan davrni shartnoma muddatidan chiqarib bo‘lmaydi";
@@ -403,72 +407,69 @@ class StudentContractController {
     try {
       if (!mongoose.isValidObjectId(req.params.id))
         return ApiResponse.notFound(res, "Shartnoma topilmadi");
-      const existing = await StudentContract.findById(req.params.id);
-      if (!existing) return ApiResponse.notFound(res, "Shartnoma topilmadi");
       const payload = this.cleanPayload(req.body);
       if (!Number.isFinite(payload.paymentAmount) || payload.paymentAmount <= 0)
         return ApiResponse.badRequest(res, "To‘lov summasi 0 dan katta bo‘lishi kerak");
       if (payload.depositEnabled && (!Number.isFinite(payload.depositAmount) || payload.depositAmount <= 0))
         return ApiResponse.badRequest(res, "Deposit summasi 0 dan katta bo‘lishi kerak");
-      if (existing.status === "cancelled")
-        return ApiResponse.conflict(
+      if (!payload.durationDays)
+        return ApiResponse.badRequest(
           res,
-          "Bekor qilingan shartnomani o‘zgartirib bo‘lmaydi. Yangi shartnoma tuzing",
+          "Tugash sanasi boshlanish sanasidan keyin bo‘lishi kerak",
         );
       if (payload.status !== "cancelled")
         payload.status = new Date(payload.endDate) < tashkentDayStart(new Date()) ? "completed" : "active";
       if (!mongoose.isValidObjectId(payload.student))
         return ApiResponse.badRequest(res, "Talabani to‘g‘ri tanlang");
-      if (await this.validateRoom(payload, res, req.params.id))
+      const current = await StudentContract.findById(req.params.id);
+      if (!current) return ApiResponse.notFound(res, "Shartnoma topilmadi");
+      const bindingChanged = String(current.room) !== String(payload.room) || String(current.student) !== String(payload.student);
+      const datesRequested =
+        current.startDate.getTime() !== new Date(payload.startDate).getTime() ||
+        current.endDate.getTime() !== new Date(payload.endDate).getTime();
+      if (current.status !== "cancelled" && (bindingChanged || !datesRequested) && await this.validateRoom(payload, res, req.params.id))
         return undefined;
-      if (new Date(payload.endDate) <= new Date(payload.startDate))
-        return ApiResponse.badRequest(
-          res,
-          "Tugash sanasi boshlanish sanasidan keyin bo‘lishi kerak",
-        );
-      const scheduleChanged =
-        existing.paymentType !== payload.paymentType ||
-        new Date(existing.startDate).getTime() !==
-          new Date(payload.startDate).getTime();
-      const paymentAmountChanged =
-        existing.paymentAmount !== payload.paymentAmount;
-      const endDateChanged =
-        new Date(existing.endDate).getTime() !==
-        new Date(payload.endDate).getTime();
-      const financialChanged =
-        scheduleChanged || paymentAmountChanged || endDateChanged;
-      const paidExists = await ContractInstallment.exists({
-        contract: req.params.id,
-        paidAmount: { $gt: 0 },
-      });
-      if (paidExists && scheduleChanged)
-        return ApiResponse.conflict(
-          res,
-          "To‘lov qilingan shartnomaning boshlanish sanasi yoki turini o‘zgartirib bo‘lmaydi",
-        );
-      if (paidExists && financialChanged) {
-        const nextContract = {
-          ...existing.toObject(),
+      const { contract, conflict } = await mongoose.connection.transaction(async (session) => {
+        const existing = await StudentContract.findById(req.params.id).session(session);
+        if (!existing) return {};
+        const datesChanged =
+          existing.startDate.getTime() !== new Date(payload.startDate).getTime() ||
+          existing.endDate.getTime() !== new Date(payload.endDate).getTime();
+        const isCancelled = existing.status === "cancelled";
+        const changes = isCancelled ? {
+          startDate: payload.startDate,
+          endDate: payload.endDate,
+          ...calculateContractPayment(payload.startDate, payload.endDate, existing.paymentType, existing.paymentAmount),
+        } : {
           ...payload,
-          _id: existing._id,
-          student: existing.student,
+          cancelledAt: payload.status === "cancelled" ? new Date() : existing.cancelledAt,
         };
-        const installmentError = await this.validateInstallmentAmounts(nextContract);
-        if (installmentError) return ApiResponse.conflict(res, installmentError);
-      }
-      if (payload.status === "cancelled" && existing.status !== "cancelled") {
-        const now = new Date();
-        payload.cancelledAt = now;
-      } else payload.cancelledAt = existing.cancelledAt;
-      const contract = await StudentContract.findByIdAndUpdate(
-        req.params.id,
-        payload,
-        { new: true, runValidators: true },
-      ).populate("room", "roomNumber block floor");
-      if (financialChanged) {
-        if (paidExists) await this.extendInstallments(contract);
-        else await this.syncInstallments(contract);
-      }
+        const paymentTypeChanged = !isCancelled && existing.paymentType !== payload.paymentType;
+        const rateChanged = !isCancelled && existing.paymentAmount !== payload.paymentAmount;
+        if (paymentTypeChanged || rateChanged) {
+          if (paymentTypeChanged && await ContractInstallment.exists({
+            contract: existing._id,
+            paidAmount: { $gt: 0 },
+          }).session(session)) {
+            return { conflict: "To‘lov qilingan shartnomaning turini o‘zgartirib bo‘lmaydi" };
+          }
+          const installmentError = await this.validateInstallmentAmounts({
+            ...changes,
+            _id: existing._id,
+          }, session);
+          if (installmentError) return { conflict: installmentError };
+        }
+
+        const updated = await StudentContract.findByIdAndUpdate(
+          existing._id,
+          changes,
+          { new: true, runValidators: true, session },
+        ).populate("room", "roomNumber block floor");
+        if (datesChanged || paymentTypeChanged || rateChanged) await this.updateInstallments(updated, session);
+        return { contract: updated };
+      });
+      if (conflict) return ApiResponse.conflict(res, conflict);
+      if (!contract) return ApiResponse.notFound(res, "Shartnoma topilmadi");
       this.emitChange(req, "updated", contract);
       return ApiResponse.ok(res, { contract }, "Shartnoma yangilandi");
     } catch (error) {

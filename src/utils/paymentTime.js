@@ -1,5 +1,14 @@
 export const TASHKENT_TIME_ZONE = 'Asia/Tashkent'
 
+export const parsePaymentDate = (value) => {
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?:T([01]\d|2[0-3]):([0-5]\d))?$/.exec(String(value || ''))
+  if (!match) return null
+  const [, year, month, day] = match.slice(0, 4).map(Number)
+  const calendarDate = new Date(Date.UTC(year, month - 1, day))
+  if (calendarDate.getUTCFullYear() !== year || calendarDate.getUTCMonth() !== month - 1 || calendarDate.getUTCDate() !== day) return null
+  return new Date(`${match[0].slice(0, 10)}T${match[4] ?? '00'}:${match[5] ?? '00'}:00+05:00`)
+}
+
 const tashkentDateParts = (value) => new Intl.DateTimeFormat('en-US', {
   timeZone: TASHKENT_TIME_ZONE,
   year: 'numeric',
@@ -25,15 +34,20 @@ export const tashkentDayStart = (value = new Date()) => new Date(tashkentDayEnd(
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
-export const paymentTimingStatus = ({ dueDate, completedAt, isPaid, now = new Date() }) => {
+export const paymentTimingDetails = ({ dueDate, completedAt, isPaid, now = new Date() }) => {
   const dueEnd = tashkentDayEnd(dueDate)
   const onTimeEnd = new Date(dueEnd.getTime() + (3 * DAY_MS))
   const almostOnTimeEnd = new Date(dueEnd.getTime() + (5 * DAY_MS))
   if (isPaid) {
     const paidAt = new Date(completedAt)
-    if (paidAt <= onTimeEnd) return 'onTime'
-    if (paidAt <= almostOnTimeEnd) return 'almostOnTime'
-    return 'late'
+    if (paidAt <= onTimeEnd) return { status: 'onTime', days: null }
+    if (paidAt <= almostOnTimeEnd) return { status: 'almostOnTime', days: null }
+    return { status: 'late', days: Math.ceil((paidAt - almostOnTimeEnd) / DAY_MS) }
   }
-  return tashkentDayEnd(now) > almostOnTimeEnd ? 'late' : 'pending'
+  const daysUntilLateDeadline = (almostOnTimeEnd - tashkentDayEnd(now)) / DAY_MS
+  return daysUntilLateDeadline < 0
+    ? { status: 'late', days: -daysUntilLateDeadline }
+    : { status: 'pending', days: daysUntilLateDeadline }
 }
+
+export const paymentTimingStatus = (options) => paymentTimingDetails(options).status

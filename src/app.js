@@ -26,6 +26,7 @@ import { isAllowedOrigin } from './config/origins.js'
 import { identifyEmployee } from './middleware/auth.js'
 import { auditMutation } from './middleware/audit.js'
 import { auditLogRouter } from './routes/auditLogRoutes.js'
+import { paymentProgressRouter } from './routes/paymentProgressRoutes.js'
 import { paymentStatisticsRouter } from './routes/paymentStatisticsRoutes.js'
 import { surveyRouter } from './routes/surveyRoutes.js'
 import { complaintRouter } from './routes/complaintRoutes.js'
@@ -54,6 +55,7 @@ app.use('/api/students', studentRouter)
 app.use('/api/student-contracts', studentContractRouter)
 app.use('/api/payments', paymentRouter)
 app.use('/api/payment-statistics', paymentStatisticsRouter)
+app.use('/api/payment-progress', paymentProgressRouter)
 app.use('/api/debtors', debtorRouter)
 app.use('/api/deposits', depositRouter)
 app.use('/api/attendance', attendanceRouter)

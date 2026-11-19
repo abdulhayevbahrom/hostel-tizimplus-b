@@ -19,6 +19,8 @@ class GeneralSettingController {
       const depositAmount = Number(req.body.depositAmount)
       if (!Number.isFinite(depositAmount) || depositAmount < 0) return ApiResponse.badRequest(res, 'Deposit summasini to‘g‘ri kiriting')
       const current = await GeneralSetting.findOne({ key: 'general' })
+      const vacantBedDailyRate = req.body.vacantBedDailyRate === undefined ? (current?.vacantBedDailyRate || 0) : Number(req.body.vacantBedDailyRate)
+      if (!Number.isSafeInteger(vacantBedDailyRate) || vacantBedDailyRate < 0) return ApiResponse.badRequest(res, 'Bo‘sh o‘rin uchun kunlik narxni to‘g‘ri kiriting')
       if (current?.logo && req.file && !req.body.removeLogo) return ApiResponse.badRequest(res, 'Avval mavjud logoni o‘chiring, keyin yangi logo yuklang')
       const uploaded = req.file ? (await uploadImages([req.file]))[0] : null
       const logo = uploaded || (req.body.removeLogo ? null : current?.logo || null)
@@ -30,6 +32,7 @@ class GeneralSettingController {
           organizationAddress: String(req.body.organizationAddress || '').trim(),
           receiptThankYou: String(req.body.receiptThankYou || '').trim(),
           depositAmount,
+          vacantBedDailyRate,
           logo,
         },
         { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true },
