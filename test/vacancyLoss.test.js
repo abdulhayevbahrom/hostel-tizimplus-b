@@ -65,3 +65,30 @@ test('live loss exposes today separately from selected historical and future mon
   assert.equal(occupiedToday.live.todayVacantBeds, 0)
   assert.equal(occupiedToday.live.completedDaysLoss, 0)
 })
+
+test('daily room and floor losses sum to monthly totals with changing occupancy', () => {
+  const result = calculate({ contracts: [contract({ startDate: new Date('2026-10-02T00:00:00+05:00') })] })
+  assert.equal(result.daily.length, 31)
+  assert.equal(result.daily[0].date, '2026-10-01')
+  assert.equal(result.daily[0].rooms[0].capacityBedDays, 1)
+  assert.equal(result.daily[0].vacantBedDays, 1)
+  assert.equal(result.daily[0].loss, 40000)
+  assert.equal(result.daily[1].vacantBedDays, 0)
+  assert.equal(result.daily[1].loss, 0)
+  assert.equal(result.daily.reduce((sum, day) => sum + day.loss, 0), result.loss)
+  for (const day of result.daily) {
+    assert.equal(day.rooms.reduce((sum, row) => sum + row.loss, 0), day.loss)
+    assert.equal(day.floors.reduce((sum, row) => sum + row.loss, 0), day.loss)
+  }
+})
+
+test('daily tables exclude future days and rooms before creation or after deletion', () => {
+  const result = calculate({ period: '2026-11', rooms: [{ ...room,
+    createdAt: new Date('2026-11-02T00:00:00+05:00'),
+    isDeleted: true, deletedAt: new Date('2026-11-04T00:00:00+05:00'),
+  }] })
+  assert.equal(result.daily.length, 19)
+  assert.deepEqual(result.daily.slice(0, 4).map((day) => day.rooms.length), [0, 1, 1, 0])
+  assert.equal(result.daily.reduce((sum, day) => sum + day.loss, 0), result.loss)
+  assert.deepEqual(calculate({ period: '2026-12' }).daily, [])
+})

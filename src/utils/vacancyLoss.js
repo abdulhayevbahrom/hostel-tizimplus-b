@@ -29,6 +29,7 @@ export function vacancyLoss({ period, todayKey, dailyRate, rooms, contracts }) {
   const todayStart = parsePaymentDate(todayKey)
   const todayEnd = new Date(todayStart.getTime() + DAY_MS - 1)
   const todayVacantBeds = eligibleRooms.reduce((sum, room) => sum + vacantOnDay(room, todayStart, todayEnd), 0)
+  const dailyRows = []
   const months = Array.from({ length: 12 }, (_, index) => {
     const monthKey = `${year}-${String(index + 1).padStart(2, '0')}`
     const calendarDays = new Date(Date.UTC(year, index + 1, 0)).getUTCDate()
@@ -41,7 +42,13 @@ export function vacancyLoss({ period, todayKey, dailyRate, rooms, contracts }) {
         const end = new Date(start.getTime() + DAY_MS - 1)
         if ((room.createdAt && new Date(room.createdAt) > end) || ended(room, end)) continue
         capacityBedDays += room.capacity
-        vacantBedDays += vacantOnDay(room, start, end)
+        const vacantBeds = vacantOnDay(room, start, end)
+        vacantBedDays += vacantBeds
+        if (monthKey === period) {
+          if (!dailyRows[day - 1]) dailyRows[day - 1] = []
+          dailyRows[day - 1].push({ id: id(room), roomNumber: room.roomNumber, block: room.block, floor: room.floor,
+            capacityBedDays: room.capacity, vacantBedDays: vacantBeds, loss: vacantBeds * rate })
+        }
       }
       return { id: id(room), roomNumber: room.roomNumber, block: room.block, floor: room.floor, capacityBedDays, vacantBedDays, loss: vacantBedDays * rate }
     }).filter((room) => room.capacityBedDays > 0)
@@ -49,14 +56,24 @@ export function vacancyLoss({ period, todayKey, dailyRate, rooms, contracts }) {
     return { period: monthKey, days, vacantBedDays, loss: vacantBedDays * rate, rooms: roomRows }
   })
   const selected = months.find((month) => month.period === period)
-  const floors = new Map()
-  for (const room of selected.rooms) {
-    const key = JSON.stringify([room.block, room.floor])
-    if (!floors.has(key)) floors.set(key, { id: key, block: room.block, floor: room.floor, vacantBedDays: 0, loss: 0 })
-    const floor = floors.get(key)
-    floor.vacantBedDays += room.vacantBedDays
-    floor.loss += room.loss
+  const groupFloors = (roomRows) => {
+    const floors = new Map()
+    for (const room of roomRows) {
+      const key = JSON.stringify([room.block, room.floor])
+      if (!floors.has(key)) floors.set(key, { id: key, block: room.block, floor: room.floor, capacityBedDays: 0, vacantBedDays: 0, loss: 0 })
+      const floor = floors.get(key)
+      floor.capacityBedDays += room.capacityBedDays
+      floor.vacantBedDays += room.vacantBedDays
+      floor.loss += room.loss
+    }
+    return [...floors.values()]
   }
+  const daily = Array.from({ length: selected.days }, (_, index) => {
+    const roomRows = dailyRows[index] || []
+    const vacantBedDays = roomRows.reduce((sum, room) => sum + room.vacantBedDays, 0)
+    return { date: `${period}-${String(index + 1).padStart(2, '0')}`, vacantBedDays, loss: vacantBedDays * rate,
+      rooms: roomRows, floors: groupFloors(roomRows) }
+  })
   return {
     live: {
       todayStart: todayStart.toISOString(),
@@ -74,7 +91,8 @@ export function vacancyLoss({ period, todayKey, dailyRate, rooms, contracts }) {
     loss: selected.loss,
     yearLoss: months.reduce((sum, month) => sum + month.loss, 0),
     rooms: selected.rooms,
-    floors: [...floors.values()],
+    floors: groupFloors(selected.rooms),
+    daily,
     months: months.map(({ rooms: _rooms, ...month }) => month),
   }
 }
