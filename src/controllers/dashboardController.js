@@ -13,8 +13,8 @@ import { Student } from '../models/Student.js'
 import { StudentContract } from '../models/StudentContract.js'
 import { ApiResponse } from '../utils/response.js'
 import { unwindPaymentParts } from '../utils/paymentParts.js'
-import { TASHKENT_TIME_ZONE, tashkentDayEnd, tashkentDayStart } from '../utils/paymentTime.js'
-import { studentExpenseTrend, yearlyStudentCounts } from '../utils/studentExpenseTrend.js'
+import { parsePaymentDate, TASHKENT_TIME_ZONE, tashkentDayEnd, tashkentDayStart } from '../utils/paymentTime.js'
+import { studentCountRange, studentExpenseTrend, yearlyStudentCounts } from '../utils/studentExpenseTrend.js'
 
 const localKeys = () => {
   const now = new Date()
@@ -64,6 +64,25 @@ const recentPeriods = (now, count = 6) => Array.from({ length: count }, (_, inde
 })
 
 class DashboardController {
+  studentCounts = async (req, res, next) => {
+    try {
+      const startDate = String(req.query.startDate || '')
+      const endDate = String(req.query.endDate || '')
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)
+        || !parsePaymentDate(startDate) || !parsePaymentDate(endDate) || startDate > endDate) {
+        return ApiResponse.badRequest(res, 'Boshlanish va tugash sanalarini to‘g‘ri kiriting')
+      }
+      const todayEnd = tashkentDayEnd(new Date())
+      const todayKey = todayEnd.toISOString().slice(0, 10)
+      const start = parsePaymentDate(startDate)
+      const end = new Date(Math.min(parsePaymentDate(endDate).getTime() + 86400000 - 1, todayEnd.getTime()))
+      const contracts = start <= end ? await StudentContract.find({ startDate: { $lte: end }, endDate: { $gte: start } })
+        .select('student startDate endDate status cancelledAt')
+        .populate({ path: 'student', select: 'isDeleted deletedAt', options: { withDeleted: true } }).lean() : []
+      return ApiResponse.ok(res, { startDate, endDate, rows: studentCountRange({ startDate, endDate, todayKey, contracts }) })
+    } catch (error) { return next(error) }
+  }
+
   get = async (req, res, next) => {
     try {
       const current = localKeys()

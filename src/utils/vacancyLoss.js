@@ -15,8 +15,7 @@ export function vacancyLoss({ period, todayKey, dailyRate, rooms, contracts }) {
     contractsByRoom.get(key).push(contract)
   }
   const eligibleRooms = rooms.filter((room) => room.status === 'available')
-  const vacantOnDay = (room, start, end) => {
-    if ((room.createdAt && new Date(room.createdAt) > end) || ended(room, end)) return 0
+  const occupiedOnDay = (room, start, end) => {
     const occupied = new Set()
     for (const contract of contractsByRoom.get(id(room)) || []) {
       if (!contract.student || new Date(contract.startDate) > end || new Date(contract.endDate) < start) continue
@@ -24,8 +23,11 @@ export function vacancyLoss({ period, todayKey, dailyRate, rooms, contracts }) {
       if (ended(contract, end) || ended(contract.student, end)) continue
       occupied.add(id(contract.student))
     }
-    return Math.max(0, room.capacity - occupied.size)
+    return occupied
   }
+  const vacantOnDay = (room, start, end) =>
+    (room.createdAt && new Date(room.createdAt) > end) || ended(room, end)
+      ? 0 : Math.max(0, room.capacity - occupiedOnDay(room, start, end).size)
   const todayStart = parsePaymentDate(todayKey)
   const todayEnd = new Date(todayStart.getTime() + DAY_MS - 1)
   const todayVacantBeds = eligibleRooms.reduce((sum, room) => sum + vacantOnDay(room, todayStart, todayEnd), 0)
@@ -37,17 +39,33 @@ export function vacancyLoss({ period, todayKey, dailyRate, rooms, contracts }) {
     const roomRows = eligibleRooms.map((room) => {
       let vacantBedDays = 0
       let capacityBedDays = 0
+      // These are inferred slots, not recorded physical bed numbers. Keep each
+      // continuing resident in the same slot instead of repacking every day.
+      const slots = Array(room.capacity).fill(null)
       for (let day = 1; day <= days; day += 1) {
         const start = parsePaymentDate(`${monthKey}-${String(day).padStart(2, '0')}`)
         const end = new Date(start.getTime() + DAY_MS - 1)
         if ((room.createdAt && new Date(room.createdAt) > end) || ended(room, end)) continue
         capacityBedDays += room.capacity
-        const vacantBeds = vacantOnDay(room, start, end)
+        const occupied = occupiedOnDay(room, start, end)
+        const vacantBeds = Math.max(0, room.capacity - occupied.size)
         vacantBedDays += vacantBeds
         if (monthKey === period) {
+          for (let index = 0; index < slots.length; index += 1) {
+            if (!occupied.has(slots[index])) slots[index] = null
+          }
+          const assigned = new Set(slots.filter(Boolean))
+          for (const student of [...occupied].sort()) {
+            if (assigned.has(student)) continue
+            const index = slots.indexOf(null)
+            if (index === -1) break
+            slots[index] = student
+            assigned.add(student)
+          }
           if (!dailyRows[day - 1]) dailyRows[day - 1] = []
           dailyRows[day - 1].push({ id: id(room), roomNumber: room.roomNumber, block: room.block, floor: room.floor,
-            capacityBedDays: room.capacity, vacantBedDays: vacantBeds, loss: vacantBeds * rate })
+            capacityBedDays: room.capacity, vacantBedDays: vacantBeds, loss: vacantBeds * rate,
+            bedStates: slots.map((student) => student ? 'occupied' : 'vacant') })
         }
       }
       return { id: id(room), roomNumber: room.roomNumber, block: room.block, floor: room.floor, capacityBedDays, vacantBedDays, loss: vacantBedDays * rate }

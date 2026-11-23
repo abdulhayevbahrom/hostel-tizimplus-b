@@ -92,3 +92,29 @@ test('daily tables exclude future days and rooms before creation or after deleti
   assert.equal(result.daily.reduce((sum, day) => sum + day.loss, 0), result.loss)
   assert.deepEqual(calculate({ period: '2026-12' }).daily, [])
 })
+
+test('calendar slots retain continuing residents and sum to actual daily vacancies', () => {
+  const result = calculate({ rooms: [{ ...room, capacity: 4 }], contracts: [
+    contract({ student: { _id: 'a' }, endDate: new Date('2026-10-02T23:59:59+05:00') }),
+    contract({ student: { _id: 'b' } }),
+    contract({ student: { _id: 'c' }, startDate: new Date('2026-10-04T00:00:00+05:00') }),
+  ] })
+  assert.deepEqual(result.daily[0].rooms[0].bedStates, ['occupied', 'occupied', 'vacant', 'vacant'])
+  assert.deepEqual(result.daily[2].rooms[0].bedStates, ['vacant', 'occupied', 'vacant', 'vacant'])
+  assert.deepEqual(result.daily[3].rooms[0].bedStates, ['occupied', 'occupied', 'vacant', 'vacant'])
+  for (const day of result.daily) {
+    const row = day.rooms[0]
+    assert.equal(row.bedStates.length, row.capacityBedDays)
+    assert.equal(row.bedStates.filter((state) => state === 'vacant').length, row.vacantBedDays)
+  }
+})
+
+test('one slot retains its 23 empty days after it becomes occupied', () => {
+  const result = calculate({ period: '2026-11', todayKey: '2026-12-01',
+    contracts: [contract({ startDate: new Date('2026-11-24T00:00:00+05:00'), endDate: new Date('2026-11-30T23:59:59+05:00') })] })
+  assert.equal(result.daily.filter((day) => day.rooms[0].bedStates[0] === 'vacant').length, 23)
+  assert.equal(result.daily.filter((day) => day.rooms[0].bedStates[0] === 'occupied').length, 7)
+  assert.equal(result.vacantBedDays, 23)
+  const overcapacity = calculate({ contracts: [contract(), contract({ student: { _id: 's2' } })] })
+  assert.deepEqual(overcapacity.daily[0].rooms[0].bedStates, ['occupied'])
+})

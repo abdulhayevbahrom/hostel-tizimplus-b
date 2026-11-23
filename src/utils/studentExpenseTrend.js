@@ -1,4 +1,15 @@
-import { tashkentDayEnd, tashkentDayStart } from './paymentTime.js'
+import { parsePaymentDate, tashkentDayEnd, tashkentDayStart } from './paymentTime.js'
+
+export function studentCountRange({ startDate, endDate, todayKey, contracts }) {
+  if (!parsePaymentDate(startDate) || !parsePaymentDate(endDate) || startDate > endDate) return null
+  const lastDate = endDate < todayKey ? endDate : todayKey
+  const rows = []
+  for (let cursor = Date.parse(`${startDate}T00:00:00Z`); cursor <= Date.parse(`${lastDate}T00:00:00Z`); cursor += 86400000) {
+    const date = new Date(cursor)
+    rows.push({ date: date.toISOString().slice(0, 10), studentCount: countResidents(date, contracts) })
+  }
+  return rows
+}
 
 function countResidents(date, contracts) {
   const start = tashkentDayStart(date)
