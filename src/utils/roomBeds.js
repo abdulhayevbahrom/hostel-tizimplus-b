@@ -4,6 +4,8 @@ const day = (value) => Math.floor((new Date(value).getTime() + 5 * 3600000) / DA
 export const staysOverlap = (first, second) => day(first.startDate) <= day(second.endDate)
   && day(first.endDate) >= day(second.startDate)
 export const hasLivingStudent = (contract) => contract.student && contract.student.isDeleted !== true
+export const isActiveRoomStay = (contract, range) => hasLivingStudent(contract)
+  && contract.status === 'active' && !contract.isDeleted && staysOverlap(contract, range)
 
 export class RoomBedError extends Error {
   constructor(message, status = 409) {
@@ -55,9 +57,8 @@ export function assignLegacyBedNumbers(room, contracts) {
 }
 
 export function roomBedState(room, contracts, range, excludeContractId = null) {
-  const relevant = contracts.filter((contract) => hasLivingStudent(contract)
-    && contract.status !== 'cancelled' && !contract.isDeleted
-    && recordId(contract) !== String(excludeContractId) && staysOverlap(contract, range))
+  const relevant = contracts.filter((contract) => isActiveRoomStay(contract, range)
+    && recordId(contract) !== String(excludeContractId))
   const numbered = assignLegacyBedNumbers(room, relevant).contracts
   return Array.from({ length: room.capacity }, (_, index) => {
     const number = index + 1

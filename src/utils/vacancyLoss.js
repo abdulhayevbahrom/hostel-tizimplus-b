@@ -1,4 +1,5 @@
 import { parsePaymentDate } from './paymentTime.js'
+import { isActiveRoomStay } from './roomBeds.js'
 
 const DAY_MS = 86400000
 const id = (value) => String(value?._id ?? value)
@@ -15,10 +16,15 @@ export function vacancyLoss({ period, todayKey, dailyRate, rooms, contracts }) {
     contractsByRoom.get(key).push(contract)
   }
   const eligibleRooms = rooms.filter((room) => room.status === 'available')
+  const todayStart = parsePaymentDate(todayKey)
+  const todayEnd = new Date(todayStart.getTime() + DAY_MS - 1)
   const occupiedOnDay = (room, start, end) => {
     const occupied = new Map()
     for (const contract of contractsByRoom.get(id(room)) || []) {
       if (!contract.student || new Date(contract.startDate) > end || new Date(contract.endDate) < start) continue
+      // Today's occupancy must agree with room cards. Earlier days retain the
+      // actual stay history after a contract completes or is cancelled.
+      if (start >= todayStart && !isActiveRoomStay(contract, { startDate: start, endDate: end })) continue
       if (contract.status === 'cancelled' && (!contract.cancelledAt || new Date(contract.cancelledAt) <= end)) continue
       if (ended(contract, end) || ended(contract.student, end)) continue
       const studentId = id(contract.student)
@@ -34,8 +40,6 @@ export function vacancyLoss({ period, todayKey, dailyRate, rooms, contracts }) {
   const vacantOnDay = (room, start, end) =>
     (room.createdAt && new Date(room.createdAt) > end) || ended(room, end)
       ? 0 : Math.max(0, room.capacity - occupiedOnDay(room, start, end).size)
-  const todayStart = parsePaymentDate(todayKey)
-  const todayEnd = new Date(todayStart.getTime() + DAY_MS - 1)
   const todayVacantBeds = eligibleRooms.reduce((sum, room) => sum + vacantOnDay(room, todayStart, todayEnd), 0)
   const dailyRows = []
   const months = Array.from({ length: 12 }, (_, index) => {

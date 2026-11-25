@@ -4,7 +4,7 @@ import { ContractInstallment } from '../models/ContractInstallment.js'
 import { Room } from '../models/Room.js'
 import { StudentContract } from '../models/StudentContract.js'
 import { lockRooms, loadRoomBedContracts } from '../services/roomBeds.js'
-import { recordId, RoomBedError, roomBedState } from '../utils/roomBeds.js'
+import { isActiveRoomStay, recordId, RoomBedError, roomBedState } from '../utils/roomBeds.js'
 import { parsePaymentDate, tashkentDayEnd, tashkentDayStart } from '../utils/paymentTime.js'
 import { ApiResponse } from '../utils/response.js'
 import { deleteImages, uploadImages } from '../utils/imgbb.js'
@@ -36,7 +36,10 @@ const bedRange = (query) => {
   }
   const period = occupancyPeriod(query.period)
   if (!period) throw new RoomBedError('Oy YYYY-MM formatida bo‘lishi kerak', 400)
-  return { startDate: period.start, endDate: new Date(period.end.getTime() - 1) }
+  // Room cards and their resident table show who lives here today. Explicit
+  // dates remain available to the contract form for future reservations.
+  const start = tashkentDayStart()
+  return { startDate: start, endDate: tashkentDayEnd(start) }
 }
 
 class RoomController {
@@ -68,7 +71,7 @@ class RoomController {
         || first.roomNumber.localeCompare(second.roomNumber, undefined, { numeric: true })
       ))
       const contracts = await StudentContract.find({ room: { $in: roomDocuments.map((room) => room._id) },
-        status: { $ne: 'cancelled' }, startDate: { $lte: tashkentDayEnd(range.endDate) },
+        status: 'active', startDate: { $lte: tashkentDayEnd(range.endDate) },
         endDate: { $gte: tashkentDayStart(range.startDate) } })
         .select('student room bedNumber startDate endDate status createdAt')
         .populate({ path: 'student', select: 'fullName isDeleted' }).lean()
@@ -127,11 +130,11 @@ class RoomController {
       if (!mongoose.isValidObjectId(req.params.id)) return ApiResponse.notFound(res, 'Xona topilmadi')
       const room = await Room.findById(req.params.id)
       if (!room) return ApiResponse.notFound(res, 'Xona topilmadi')
-      const period = occupancyPeriod(req.query.period)
-      if (!period) return ApiResponse.badRequest(res, 'Oy YYYY-MM formatida bo‘lishi kerak')
-      const contracts = await StudentContract.find({ room: room._id, status: { $ne: 'cancelled' }, startDate: { $lt: period.end }, endDate: { $gte: period.start } })
-        .populate({ path: 'student', select: 'fullName phone parentPhone photo university faculty course gender educationType', populate: [{ path: 'university', select: 'name' }, { path: 'faculty', select: 'name' }] })
+      const range = bedRange(req.query)
+      const contracts = (await StudentContract.find({ room: room._id, status: 'active', startDate: { $lte: range.endDate }, endDate: { $gte: range.startDate } })
+        .populate({ path: 'student', select: 'fullName phone parentPhone photo university faculty course gender educationType isDeleted', populate: [{ path: 'university', select: 'name' }, { path: 'faculty', select: 'name' }] })
         .sort({ bedNumber: 1, startDate: 1 })
+      ).filter((contract) => isActiveRoomStay(contract, range))
       const contractIds = contracts.map((contract) => contract._id)
       const contractInstallments = await ContractInstallment.find({ contract: { $in: contractIds } })
         .select('contract periodKey dueDate amount paidAmount status periodIndex')
@@ -159,7 +162,9 @@ class RoomController {
           installments: installmentsByContract.get(contract._id.toString()) || [],
         }
       })
-      return ApiResponse.ok(res, { room, students, occupiedCount: students.length, availableCount: Math.max(0, room.capacity - students.length) })
+      const occupiedCount = new Set(students.map((item) => recordId(item.student))).size
+      return ApiResponse.ok(res, { room, students, occupiedCount,
+        availableCount: room.status === 'available' ? Math.max(0, room.capacity - occupiedCount) : 0 })
     } catch (error) { return next(error) }
   }
 

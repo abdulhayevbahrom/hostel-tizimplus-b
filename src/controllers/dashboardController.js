@@ -103,7 +103,9 @@ class DashboardController {
       const selectedDayEnd = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate(), 23, 59, 59, 999)
       const validStudentIds = await Student.distinct('_id')
       const validStudentFilter = { student: { $in: validStudentIds } }
-      const activeContractFilter = { student: { $in: validStudentIds }, status: { $in: ['active', 'completed'] }, startDate: { $lte: selectedDayEnd }, endDate: { $gte: dayStart } }
+      const activeContractFilter = { student: { $in: validStudentIds },
+        status: dayKey >= todayInTashkent ? 'active' : { $in: ['active', 'completed'] },
+        startDate: { $lte: selectedDayEnd }, endDate: { $gte: dayStart } }
       const financialContractIds = await StudentContract.distinct('_id', { student: { $in: validStudentIds }, status: { $ne: 'cancelled' } })
       const financialPaymentFilter = { student: { $in: validStudentIds }, status: { $ne: 'cancelled' }, cancelledAt: null }
       const [

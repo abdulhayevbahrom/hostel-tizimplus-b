@@ -82,6 +82,7 @@ test('room availability API returns the exact free numbers for the requested dat
 })
 
 test('an overcapacity legacy room does not block the room list or advertise unverified beds', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-25T07:00:00Z') })
   const conflictId = new mongoose.Types.ObjectId()
   const conflictRoom = { ...room, _id: conflictId, id: String(conflictId), roomNumber: '3', capacity: 1 }
   const documents = [room, conflictRoom].map((value) => ({ ...value, toJSON: () => ({ ...value }) }))

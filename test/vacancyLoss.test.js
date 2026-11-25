@@ -61,7 +61,7 @@ test('live loss exposes today separately from selected historical and future mon
   assert.equal(calculate().live.completedDaysLoss, 31 * 40000)
   assert.equal(calculate().live.includesToday, false)
   assert.equal(calculate({ period: '2027-01' }).live.completedDaysLoss, 0)
-  const occupiedToday = calculate({ period: '2026-11', contracts: [contract({ endDate: new Date('2026-11-30') })] })
+  const occupiedToday = calculate({ period: '2026-11', contracts: [contract({ status: 'active', endDate: new Date('2026-11-30') })] })
   assert.equal(occupiedToday.live.todayVacantBeds, 0)
   assert.equal(occupiedToday.live.completedDaysLoss, 0)
 })
