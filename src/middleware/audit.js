@@ -103,11 +103,15 @@ export async function auditMutation(req, res, next) {
   const paramId = resource.parts.find((part) => mongoose.isValidObjectId(part))
   let oldValue = null
   try {
-    if (paramId) {
+    if (resource.entityType === 'debtor-deadline' && paramId) {
+      oldValue = await DebtorDeadline.findOne({ student: paramId, periodKey: String(req.body.periodKey || '') })
+        .populate('student', 'fullName').lean()
+    } else if (paramId) {
       if (resource.entityType !== 'student') {
         const oldQuery = resource.model.findById(paramId)
         if (resource.entityType === 'contract') oldQuery.populate([{ path: 'student', select: 'fullName' }, { path: 'room', select: 'roomNumber block floor' }])
         if (resource.entityType === 'fine' || resource.entityType === 'payment') oldQuery.populate('student', 'fullName')
+        if (resource.entityType === 'payment') oldQuery.populate('allocations.installment', 'periodKey amount paidAmount status')
         oldValue = await oldQuery.lean()
       }
     }
@@ -121,7 +125,8 @@ export async function auditMutation(req, res, next) {
     const action = actionFor(req.method, req.path)
     const newValue = responseBody?.data || req.body
     const effectiveOldValue = req.auditOldValue ?? oldValue
-    const entityId = paramId || extractEntityId(newValue, resource.entityType)
+    const entityId = resource.entityType === 'debtor-deadline'
+      ? extractEntityId(newValue, resource.entityType) : paramId || extractEntityId(newValue, resource.entityType)
     const latitude = Number(req.get('x-client-latitude'))
     const longitude = Number(req.get('x-client-longitude'))
     const forwarded = req.get('x-forwarded-for')?.split(',')[0]?.trim()

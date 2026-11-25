@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
-    "test": "node --test"
+    "test": "node --test",
+    "migrate:room-beds": "node scripts/assignRoomBeds.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",

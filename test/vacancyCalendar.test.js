@@ -56,3 +56,57 @@ test('inactive days stay unknown and future months have no invented data', () =>
   assert.deepEqual(vacancyCalendar(calculate({ period: '2026-12' })), [])
   assert.deepEqual(vacancyCalendar(undefined), [])
 })
+
+test('each occupied slot identifies that day’s resident and contract through departures and replacement', () => {
+  const first = { ...contract('s1', '01', '02'), student: { _id: 's1', fullName: 'Ali Valiyev' } }
+  const continuing = { ...contract('s2', '01', '30'), student: { _id: 's2', fullName: 'Salim Karimov' } }
+  const replacement = { ...contract('s3', '04', '30'), student: { _id: 's3', fullName: 'Aziza Olimova' } }
+  const result = calculate({ rooms: [{ ...room, capacity: 3 }], contracts: [first, continuing, replacement] })
+  const occupants = (day) => result.daily[day - 1].rooms[0].bedOccupants
+  const expected = (item) => ({ studentId: item.student._id, fullName: item.student.fullName,
+    startDate: item.startDate, endDate: item.endDate })
+  assert.deepEqual(occupants(1), [expected(first), expected(continuing), null])
+  assert.deepEqual(occupants(3), [null, expected(continuing), null])
+  assert.deepEqual(occupants(4), [expected(replacement), expected(continuing), null])
+  for (const day of result.daily) {
+    const row = day.rooms[0]
+    assert.deepEqual(row.bedOccupants.map((occupant) => occupant ? 'occupied' : 'vacant'), row.bedStates)
+  }
+})
+
+test('contract details follow renewals and select the latest overlapping contract without duplicating a student', () => {
+  const original = { ...contract('s1', '01', '10'), _id: 'c1' }
+  const renewal = { ...contract('s1', '08', '30'), _id: 'c2' }
+  for (const ordered of [[original, renewal], [renewal, original]]) {
+    const result = calculate({ rooms: [{ ...room, capacity: 1 }], contracts: ordered })
+    assert.equal(result.daily[6].rooms[0].bedOccupants[0].endDate, original.endDate)
+    assert.equal(result.daily[7].rooms[0].bedOccupants[0].endDate, renewal.endDate)
+    assert.equal(result.daily[10].rooms[0].bedOccupants[0].startDate, renewal.startDate)
+    assert.equal(result.vacantBedDays, 0)
+  }
+})
+
+test('occupant details stop at cancellation or deletion while retaining historical names', () => {
+  for (const extra of [
+    { status: 'cancelled', cancelledAt: new Date('2026-11-03T00:00:00+05:00') },
+    { isDeleted: true, deletedAt: new Date('2026-11-03T00:00:00+05:00') },
+    { student: { _id: 's1', fullName: 'Ali Valiyev', isDeleted: true, deletedAt: new Date('2026-11-03T00:00:00+05:00') } },
+  ]) {
+    const result = calculate({ rooms: [{ ...room, capacity: 1 }], contracts: [
+      { ...contract('s1', '01', '30'), student: { _id: 's1', fullName: 'Ali Valiyev' }, ...extra },
+    ] })
+    assert.equal(result.daily[1].rooms[0].bedOccupants[0].fullName, 'Ali Valiyev')
+    assert.deepEqual(result.daily[2].rooms[0].bedOccupants, [null])
+  }
+})
+
+test('recorded bed numbers keep the same physical row instead of being packed from the first empty slot', () => {
+  const fixed = { ...contract('s1', '01', '30'), bedNumber: 4 }
+  const later = { ...contract('s2', '05', '30'), bedNumber: 2 }
+  const result = calculate({ contracts: [fixed, later] })
+  assert.deepEqual(result.daily[0].rooms[0].bedStates, ['vacant', 'vacant', 'vacant', 'occupied'])
+  assert.deepEqual(result.daily[4].rooms[0].bedStates, ['vacant', 'occupied', 'vacant', 'occupied'])
+  assert.equal(result.daily[4].rooms[0].bedOccupants[3].studentId, 's1')
+  assert.equal(result.daily[4].rooms[0].bedOccupants[1].studentId, 's2')
+  assert.equal(result.daily[4].rooms[0].vacantBedDays, 2)
+})

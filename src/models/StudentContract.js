@@ -5,6 +5,8 @@ const studentContractSchema = new mongoose.Schema(
   {
     student: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true, index: true },
     room: { type: mongoose.Schema.Types.ObjectId, ref: 'Room', required: true, index: true },
+    bedNumber: { type: Number, default: null, min: 1, max: 50,
+      validate: { validator: (value) => value == null || Number.isInteger(value), message: 'O‘rin raqami butun son bo‘lishi kerak' } },
     contractNumber: { type: String, required: true, trim: true, maxlength: 60 },
     startDate: { type: Date, required: true },
     endDate: { type: Date, required: true },
@@ -25,6 +27,7 @@ const studentContractSchema = new mongoose.Schema(
 studentContractSchema.index({ status: 1, startDate: 1, endDate: 1 })
 studentContractSchema.index({ student: 1, status: 1 })
 studentContractSchema.index({ room: 1, status: 1 })
+studentContractSchema.index({ room: 1, bedNumber: 1, startDate: 1, endDate: 1 })
 studentContractSchema.plugin(softDeletePlugin)
 
 studentContractSchema.set('toJSON', {

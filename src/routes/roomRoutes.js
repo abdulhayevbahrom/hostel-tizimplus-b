@@ -6,6 +6,7 @@ import { requireAuth } from '../middleware/auth.js'
 export const roomRouter = Router()
 roomRouter.use(requireAuth)
 roomRouter.get('/', roomController.list)
+roomRouter.get('/:id/beds', roomController.beds)
 roomRouter.get('/:id/students', roomController.students)
 roomRouter.get('/:id', roomController.getById)
 roomRouter.post('/', uploadRoomImages, parseRoomPayload, roomController.create)

@@ -3,6 +3,9 @@ import { BuildingBlock } from '../models/BuildingBlock.js'
 import { ContractInstallment } from '../models/ContractInstallment.js'
 import { Room } from '../models/Room.js'
 import { StudentContract } from '../models/StudentContract.js'
+import { lockRooms, loadRoomBedContracts } from '../services/roomBeds.js'
+import { recordId, RoomBedError, roomBedState } from '../utils/roomBeds.js'
+import { parsePaymentDate, tashkentDayEnd, tashkentDayStart } from '../utils/paymentTime.js'
 import { ApiResponse } from '../utils/response.js'
 import { deleteImages, uploadImages } from '../utils/imgbb.js'
 
@@ -10,10 +13,8 @@ const occupancyPeriod = (period) => {
   const value = String(period || '')
   const match = /^(\d{4})-(\d{2})$/.exec(value)
   if (!match) {
-    const start = new Date()
-    start.setHours(0, 0, 0, 0)
-    const end = new Date(start)
-    end.setDate(end.getDate() + 1)
+    const start = tashkentDayStart()
+    const end = new Date(start.getTime() + 86400000)
     return { start, end }
   }
 
@@ -21,9 +22,21 @@ const occupancyPeriod = (period) => {
   const month = Number(match[2])
   if (month < 1 || month > 12) return null
   return {
-    start: new Date(year, month - 1, 1),
-    end: new Date(year, month, 1),
+    start: new Date(Date.UTC(year, month - 1, 1) - 5 * 3600000),
+    end: new Date(Date.UTC(year, month, 1) - 5 * 3600000),
   }
+}
+
+const bedRange = (query) => {
+  if (query.startDate || query.endDate) {
+    const start = /^\d{4}-\d{2}-\d{2}$/.test(String(query.startDate)) ? parsePaymentDate(query.startDate) : null
+    const end = /^\d{4}-\d{2}-\d{2}$/.test(String(query.endDate)) ? parsePaymentDate(query.endDate) : null
+    if (!start || !end || end < start) throw new RoomBedError('Boshlanish va tugash sanalarini to‘g‘ri tanlang', 400)
+    return { startDate: start, endDate: end }
+  }
+  const period = occupancyPeriod(query.period)
+  if (!period) throw new RoomBedError('Oy YYYY-MM formatida bo‘lishi kerak', 400)
+  return { startDate: period.start, endDate: new Date(period.end.getTime() - 1) }
 }
 
 class RoomController {
@@ -47,22 +60,29 @@ class RoomController {
 
   list = async (req, res, next) => {
     try {
-      const period = occupancyPeriod(req.query.period)
-      if (!period) return ApiResponse.badRequest(res, 'Oy YYYY-MM formatida bo‘lishi kerak')
+      const range = bedRange(req.query)
       const roomDocuments = await Room.find().sort({ block: 1, roomNumber: 1 })
       roomDocuments.sort((first, second) => (
         first.block.localeCompare(second.block, undefined, { numeric: true })
         || first.floor.localeCompare(second.floor, undefined, { numeric: true })
         || first.roomNumber.localeCompare(second.roomNumber, undefined, { numeric: true })
       ))
-      const occupied = await StudentContract.aggregate([
-        { $match: { status: 'active', startDate: { $lt: period.end }, endDate: { $gte: period.start } } },
-        { $lookup: { from: 'students', localField: 'student', foreignField: '_id', as: 'studentDocument' } },
-        { $match: { 'studentDocument.0': { $exists: true }, 'studentDocument.0.isDeleted': { $ne: true } } },
-        { $group: { _id: '$room', count: { $sum: 1 } } },
-      ])
-      const occupiedByRoom = new Map(occupied.map((item) => [item._id.toString(), item.count]))
-      const rooms = roomDocuments.map((room) => ({ ...room.toJSON(), occupiedCount: occupiedByRoom.get(room.id) || 0 }))
+      const contracts = await StudentContract.find({ room: { $in: roomDocuments.map((room) => room._id) },
+        status: { $ne: 'cancelled' }, startDate: { $lte: tashkentDayEnd(range.endDate) },
+        endDate: { $gte: tashkentDayStart(range.startDate) } })
+        .select('student room bedNumber startDate endDate status createdAt')
+        .populate({ path: 'student', select: 'fullName isDeleted' }).lean()
+      const byRoom = new Map()
+      for (const contract of contracts) {
+        const key = recordId(contract.room)
+        if (!byRoom.has(key)) byRoom.set(key, [])
+        byRoom.get(key).push(contract)
+      }
+      const rooms = roomDocuments.map((room) => {
+        const beds = roomBedState(room, byRoom.get(room.id) || [], range, req.query.excludeContractId)
+        return { ...room.toJSON(), beds, occupiedCount: beds.filter((bed) => bed.occupied).length,
+          availableBeds: beds.filter((bed) => bed.available).map((bed) => bed.number) }
+      })
       const summary = rooms.reduce((result, room) => {
         result.totalRooms += 1
         result.totalBeds += room.capacity
@@ -72,6 +92,17 @@ class RoomController {
         return result
       }, { totalRooms: 0, totalBeds: 0, maleRooms: 0, femaleRooms: 0, maintenanceRooms: 0 })
       return ApiResponse.ok(res, { rooms, summary })
+    } catch (error) { return next(error) }
+  }
+
+  beds = async (req, res, next) => {
+    try {
+      if (!mongoose.isValidObjectId(req.params.id)) return ApiResponse.notFound(res, 'Xona topilmadi')
+      const room = await Room.findById(req.params.id)
+      if (!room) return ApiResponse.notFound(res, 'Xona topilmadi')
+      const range = bedRange(req.query)
+      const beds = roomBedState(room, await loadRoomBedContracts(room._id), range, req.query.excludeContractId)
+      return ApiResponse.ok(res, { room, beds, availableBeds: beds.filter((bed) => bed.available).map((bed) => bed.number) })
     } catch (error) { return next(error) }
   }
 
@@ -91,9 +122,9 @@ class RoomController {
       if (!room) return ApiResponse.notFound(res, 'Xona topilmadi')
       const period = occupancyPeriod(req.query.period)
       if (!period) return ApiResponse.badRequest(res, 'Oy YYYY-MM formatida bo‘lishi kerak')
-      const contracts = await StudentContract.find({ room: room._id, status: 'active', startDate: { $lt: period.end }, endDate: { $gte: period.start } })
+      const contracts = await StudentContract.find({ room: room._id, status: { $ne: 'cancelled' }, startDate: { $lt: period.end }, endDate: { $gte: period.start } })
         .populate({ path: 'student', select: 'fullName phone parentPhone photo university faculty course gender educationType', populate: [{ path: 'university', select: 'name' }, { path: 'faculty', select: 'name' }] })
-        .sort({ startDate: 1 })
+        .sort({ bedNumber: 1, startDate: 1 })
       const contractIds = contracts.map((contract) => contract._id)
       const contractInstallments = await ContractInstallment.find({ contract: { $in: contractIds } })
         .select('contract periodKey dueDate amount paidAmount status periodIndex')
@@ -117,7 +148,7 @@ class RoomController {
       const students = contracts.filter((item) => item.student).map((contract) => {
         return {
           student: contract.student,
-          contract: { id: contract.id, contractNumber: contract.contractNumber, startDate: contract.startDate, endDate: contract.endDate, paymentType: contract.paymentType, paymentAmount: contract.paymentAmount },
+          contract: { id: contract.id, bedNumber: contract.bedNumber, contractNumber: contract.contractNumber, startDate: contract.startDate, endDate: contract.endDate, paymentType: contract.paymentType, paymentAmount: contract.paymentAmount },
           installments: installmentsByContract.get(contract._id.toString()) || [],
         }
       })
@@ -151,8 +182,17 @@ class RoomController {
       const retainedUrls = new Set(retainedImages.map((image) => image.url))
       const removedImages = currentImages.filter((image) => !retainedUrls.has(image.url))
       const uploadedImages = await uploadImages(req.files)
-      room.set({ ...payload, images: [...retainedImages, ...uploadedImages] })
-      await room.save()
+      await mongoose.connection.transaction(async (session) => {
+        const locked = (await lockRooms([room._id], session)).get(room.id)
+        const residents = (await loadRoomBedContracts(room._id, session))
+          .filter((contract) => contract.status === 'active' && contract.student && !contract.student.isDeleted)
+        if (residents.some((contract) => contract.bedNumber > payload.capacity)) {
+          throw new RoomBedError('Xona sig‘imini band o‘rin raqamidan kichraytirib bo‘lmaydi')
+        }
+        locked.set({ ...payload, images: [...retainedImages, ...uploadedImages] })
+        await locked.save({ session })
+        room.set(locked.toObject())
+      })
       await deleteImages(removedImages)
       this.emitChange(req, 'updated', room)
       return ApiResponse.ok(res, { room }, 'Xona yangilandi')

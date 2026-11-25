@@ -15,8 +15,8 @@ const auditSchema = new mongoose.Schema({
   action: { type: String, enum: ['created', 'updated', 'cancelled'], required: true },
   performedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee', required: true },
   performedAt: { type: Date, default: Date.now },
-  before: { amount: Number, method: String, fundHolder: String, paymentParts: mongoose.Schema.Types.Mixed, paymentDate: Date, note: String },
-  after: { amount: Number, method: String, fundHolder: String, paymentParts: mongoose.Schema.Types.Mixed, paymentDate: Date, note: String },
+  before: { amount: Number, method: String, fundHolder: String, paymentParts: mongoose.Schema.Types.Mixed, paymentDate: Date, paymentPeriod: String, note: String },
+  after: { amount: Number, method: String, fundHolder: String, paymentParts: mongoose.Schema.Types.Mixed, paymentDate: Date, paymentPeriod: String, note: String },
 }, { _id: true })
 
 const paymentSchema = new mongoose.Schema({

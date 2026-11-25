@@ -9,7 +9,10 @@ import { StudentContract } from '../models/StudentContract.js'
 import { University } from '../models/University.js'
 import { ApiResponse } from '../utils/response.js'
 import { uploadImages } from '../utils/imgbb.js'
-import { paymentTimingDetails, periodKeyInTashkent } from '../utils/paymentTime.js'
+import { parsePaymentDate, paymentTimingDetails, periodKeyInTashkent } from '../utils/paymentTime.js'
+import { studentContractController } from './studentContractController.js'
+import { reserveRoomBed } from '../services/roomBeds.js'
+import { buildContractInstallments } from '../utils/contractPayment.js'
 
 class StudentController {
   history = async (req, res, next) => {
@@ -135,20 +138,20 @@ class StudentController {
     return identities.length ? BlacklistEntry.findOne({ active: true, $or: identities }) : null
   }
 
-  async syncBlacklist(student) {
+  async syncBlacklist(student, session = null) {
     const identity = { jshr: student.jshr, passportSeries: student.passportSeries, passportNumber: student.passportNumber }
     const identities = [{ sourceStudent: student._id }]
     if (student.jshr) identities.push({ jshr: student.jshr })
     if (student.passportSeries && student.passportNumber) identities.push({ passportSeries: student.passportSeries, passportNumber: student.passportNumber })
-    const entry = await BlacklistEntry.findOne({ $or: identities })
+    const entry = await BlacklistEntry.findOne({ $or: identities }).session(session)
     if (student.disciplinaryStatus === 'blacklisted') {
       if (entry) {
         entry.set({ ...identity, reason: student.disciplinaryNote, sourceStudent: student._id, active: true })
-        await entry.save()
-      } else await BlacklistEntry.create({ ...identity, reason: student.disciplinaryNote, sourceStudent: student._id, active: true })
+        await entry.save({ session })
+      } else await BlacklistEntry.create([{ ...identity, reason: student.disciplinaryNote, sourceStudent: student._id, active: true }], { session })
     } else if (entry?.sourceStudent?.toString() === student.id) {
       entry.active = false
-      await entry.save()
+      await entry.save({ session })
     }
   }
 
@@ -208,6 +211,15 @@ class StudentController {
       const paymentPeriod = /^\d{4}-\d{2}$/.test(String(req.query.period || ''))
         ? String(req.query.period)
         : periodKeyInTashkent(now)
+      if (req.query.contractCreatedFrom || req.query.contractCreatedTo) {
+        const from = String(req.query.contractCreatedFrom || '')
+        const to = String(req.query.contractCreatedTo || '')
+        const start = /^\d{4}-\d{2}-\d{2}$/.test(from) ? parsePaymentDate(from) : null
+        const end = /^\d{4}-\d{2}-\d{2}$/.test(to) ? parsePaymentDate(to) : null
+        if (!start || !end || start > end) return ApiResponse.badRequest(res, 'Shartnoma tuzilgan sana oralig‘ini to‘g‘ri tanlang')
+        const studentIds = await StudentContract.distinct('student', { createdAt: { $gte: start, $lt: new Date(end.getTime() + 86400000) } })
+        filter.$and = [...(filter.$and || []), { _id: { $in: studentIds } }]
+      }
       const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
       const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999)
       const [contractStudentIds, currentContractStudentIds] = await Promise.all([
@@ -304,7 +316,7 @@ class StudentController {
         .skip((currentPage - 1) * limit)
         .limit(limit)
       const activeContracts = await StudentContract.find({ student: { $in: students.map((student) => student._id) }, status: 'active', startDate: { $lte: todayEnd }, endDate: { $gte: todayStart } })
-        .select('student room createdAt startDate endDate')
+        .select('student room bedNumber createdAt startDate endDate')
         .populate('room', 'roomNumber block floor')
       const studentsWithContract = new Set((await StudentContract.distinct('student', {
         student: { $in: students.map((student) => student._id) },
@@ -314,7 +326,7 @@ class StudentController {
       const rows = students.map((student) => {
         const activeContract = activeContractByStudent.get(student.id)
         const payment = currentPaymentByStudent.get(student.id)
-        return { ...student.toJSON(), hasContract: studentsWithContract.has(student.id), activeContractCreatedAt: activeContract?.createdAt || null, activeContractStartDate: activeContract?.startDate || null, activeContractEndDate: activeContract?.endDate || null, activeRoom: activeContract?.room || null, currentPaymentStatus: payment?.status ?? null, currentPaymentDays: payment?.days ?? null, currentPaymentDueDate: payment?.dueDate ?? null, currentPaymentLastPaidAt: payment?.lastPaidAt ?? null }
+        return { ...student.toJSON(), hasContract: studentsWithContract.has(student.id), activeContractCreatedAt: activeContract?.createdAt || null, activeContractStartDate: activeContract?.startDate || null, activeContractEndDate: activeContract?.endDate || null, activeRoom: activeContract?.room || null, activeBedNumber: activeContract?.bedNumber || null, currentPaymentStatus: payment?.status ?? null, currentPaymentDays: payment?.days ?? null, currentPaymentDueDate: payment?.dueDate ?? null, currentPaymentLastPaidAt: payment?.lastPaidAt ?? null }
       })
       return ApiResponse.ok(res, { students: rows, paymentPeriod, paymentSummary, pagination: { page: currentPage, limit, total, totalPages } })
     } catch (error) { return next(error) }
@@ -343,6 +355,39 @@ class StudentController {
       await student.populate([{ path: 'university', select: 'name shortName' }, { path: 'faculty', select: 'name' }])
       this.emitChange(req, 'created', student)
       return ApiResponse.created(res, { student }, 'Talaba qo‘shildi')
+    } catch (error) { return next(error) }
+  }
+
+  admit = async (req, res, next) => {
+    try {
+      if (!req.body.student || !req.body.contract) return ApiResponse.badRequest(res, 'Talaba va shartnoma ma’lumotlarini to‘ldiring')
+      const payload = this.cleanPayload(req.body.student)
+      if (this.validateConditionalFields(payload, res)) return undefined
+      if (payload.disciplinaryStatus === 'blacklisted' && !payload.disciplinaryNote) return ApiResponse.badRequest(res, 'Qora ro‘yxat sababini kiriting')
+      const blocked = await this.findBlacklist(payload)
+      if (blocked) return ApiResponse.conflict(res, `Bu shaxs qora ro‘yxatda: ${blocked.reason}`)
+      // Validate personal fields before creating any optional directory entries.
+      const student = new Student({ ...payload, university: null, faculty: null })
+      await student.validate()
+      const contractPayload = studentContractController.cleanPayload({ ...req.body.contract, student: student._id, status: 'active' })
+      if (!contractPayload.durationDays) return ApiResponse.badRequest(res, 'Tugash sanasi boshlanish sanasidan keyin bo‘lishi kerak')
+      if (!Number.isFinite(contractPayload.paymentAmount) || contractPayload.paymentAmount <= 0) return ApiResponse.badRequest(res, 'To‘lov summasi 0 dan katta bo‘lishi kerak')
+      if (contractPayload.depositEnabled && (!Number.isFinite(contractPayload.depositAmount) || contractPayload.depositAmount <= 0)) return ApiResponse.badRequest(res, 'Deposit summasi 0 dan katta bo‘lishi kerak')
+      const contract = new StudentContract(contractPayload)
+      await contract.validate()
+      if (await this.resolveEducation(payload, req, res)) return undefined
+      student.set(payload)
+      student.photo = req.file ? (await uploadImages([req.file]))[0] : null
+      await mongoose.connection.transaction(async (session) => {
+        await reserveRoomBed(contractPayload, session, { newStudent: student })
+        await student.save({ session })
+        await contract.save({ session })
+        await ContractInstallment.insertMany(buildContractInstallments(contract), { session })
+        await this.syncBlacklist(student, session)
+      })
+      this.emitChange(req, 'created', student)
+      studentContractController.emitChange(req, 'created', contract)
+      return ApiResponse.created(res, { student, contract }, 'Talaba qabul qilindi va shartnoma tuzildi')
     } catch (error) { return next(error) }
   }
 

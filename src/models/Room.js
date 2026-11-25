@@ -7,6 +7,7 @@ const roomSchema = new mongoose.Schema(
     block: { type: String, trim: true, maxlength: 80, default: '' },
     floor: { type: String, required: true, trim: true, maxlength: 30 },
     capacity: { type: Number, required: true, min: 1, max: 50 },
+    bookingVersion: { type: Number, default: 0 },
     category: { type: String, enum: ['', 'standart', 'komfort', 'premium', 'maxsus'], default: '' },
     gender: { type: String, enum: ['male', 'female'], required: true },
     status: { type: String, enum: ['available', 'maintenance'], default: 'available' },
@@ -27,6 +28,7 @@ roomSchema.set('toJSON', {
     result.id = result._id.toString()
     delete result._id
     delete result.__v
+    delete result.bookingVersion
     result.images?.forEach((image) => delete image.deleteUrl)
     return result
   },

@@ -193,6 +193,10 @@ class PaymentController {
           contract: payment.contract,
           amount,
           method: payment.method,
+          fundHolder: payment.fundHolder,
+          paymentPurpose: payment.paymentPurpose,
+          allocations: payment.allocations,
+          status: payment.status,
           paymentParts: effectivePaymentParts(payment),
           note: payment.note,
           paymentDate: effectivePaymentDate(payment),
@@ -320,6 +324,7 @@ class PaymentController {
         const allocation = payment.allocations[0]
         const isDeposit = payment.paymentPurpose === 'deposit'
         const oldInstallment = isDeposit ? null : await ContractInstallment.findById(allocation?.installment).session(session)
+        if (oldInstallment) before.paymentPeriod = oldInstallment.periodKey
         const requestedInstallmentId = req.body.installment || allocation?.installment
         if (!isDeposit && !mongoose.isValidObjectId(requestedInstallmentId)) throw Object.assign(new Error('To‘lov oyini tanlang'), { paymentValidation: true })
         const installment = isDeposit ? null : await ContractInstallment.findOne({ _id: requestedInstallmentId, contract: payment.contract }).session(session)
@@ -351,7 +356,8 @@ class PaymentController {
           payment.cashSession = receiverSession._id
         }
         payment.amount = amount; payment.method = method; payment.paymentDate = paymentDate; payment.note = String(req.body.note || '').trim(); payment.allocations = installment ? [{ installment: installment._id, amount }] : []
-        payment.auditHistory.push({ action: 'updated', performedBy: req.employee._id, before, after: snapshot(payment) })
+        payment.auditHistory.push({ action: 'updated', performedBy: req.employee._id, before,
+          after: { ...snapshot(payment), ...(installment ? { paymentPeriod: installment.periodKey } : {}) } })
         await adjustCashSession(payment, before, snapshot(payment), false, session)
         await payment.save({ session })
       })

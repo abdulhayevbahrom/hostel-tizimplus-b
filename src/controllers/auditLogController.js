@@ -1,6 +1,7 @@
 import mongoose from 'mongoose'
 import { AuditLog } from '../models/AuditLog.js'
 import { ApiResponse } from '../utils/response.js'
+import { auditStudentNames } from '../utils/auditStudentNames.js'
 
 class AuditLogController {
   list = async (req, res, next) => {
@@ -14,7 +15,7 @@ class AuditLogController {
       if (req.query.from || req.query.to) filter.createdAt = { ...(req.query.from ? { $gte: new Date(`${req.query.from}T00:00:00+05:00`) } : {}), ...(req.query.to ? { $lte: new Date(`${req.query.to}T23:59:59.999+05:00`) } : {}) }
       const total = await AuditLog.countDocuments(filter)
       const logs = await AuditLog.find(filter).populate('employee', 'firstname lastname position role login').sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit)
-      return ApiResponse.ok(res, { logs, pagination: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) } })
+      return ApiResponse.ok(res, { logs: await auditStudentNames(logs), pagination: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) } })
     } catch (error) { return next(error) }
   }
 
@@ -22,7 +23,7 @@ class AuditLogController {
     try {
       if (!mongoose.isValidObjectId(req.params.studentId)) return ApiResponse.notFound(res, 'Talaba topilmadi')
       const logs = await AuditLog.find({ studentIds: req.params.studentId }).populate('employee', 'firstname lastname position role login').sort({ createdAt: -1 }).limit(300)
-      return ApiResponse.ok(res, { logs })
+      return ApiResponse.ok(res, { logs: await auditStudentNames(logs) })
     } catch (error) { return next(error) }
   }
 }

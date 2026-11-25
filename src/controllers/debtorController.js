@@ -119,7 +119,7 @@ class DebtorController {
         { student: req.params.studentId, periodKey },
         { deadline, setBy: req.employee._id },
         { new: true, upsert: true, setDefaultsOnInsert: true },
-      ).populate('setBy', 'firstname lastname role')
+      ).populate('setBy', 'firstname lastname role').populate('student', 'fullName')
       req.app.get('io')?.emit('debtors:changed', { action: 'deadline-updated', studentId: req.params.studentId, periodKey })
       return ApiResponse.ok(res, { deadline: saved }, 'To‘lov deadline’i saqlandi')
     } catch (error) { return next(error) }

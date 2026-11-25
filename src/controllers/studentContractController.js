@@ -9,13 +9,17 @@ import {
   buildContractInstallments,
   calculateContractPayment,
 } from "../utils/contractPayment.js";
-import { tashkentDayStart } from "../utils/paymentTime.js";
+import { periodKeyInTashkent, tashkentDayStart } from "../utils/paymentTime.js";
+import { reserveRoomBed } from "../services/roomBeds.js";
+import { recordId } from "../utils/roomBeds.js";
+import { cancelledReportPeriod } from "../utils/cancelledReportPeriod.js";
 
 class StudentContractController {
   cleanPayload(body) {
     const payload = {
       student: body.student,
       room: body.room,
+      bedNumber: body.bedNumber == null || body.bedNumber === "" ? null : Number(body.bedNumber),
       contractNumber: String(body.contractNumber || "").trim(),
       startDate: body.startDate,
       endDate: body.endDate,
@@ -44,14 +48,14 @@ class StudentContractController {
       .get("io")
       ?.emit("student-contracts:changed", {
         action,
-        studentId: contract?.student?.toString(),
+        studentId: recordId(contract?.student),
         contractId: contract?.id || contract?._id?.toString(),
       });
     req.app
       .get("io")
       ?.emit("rooms:changed", {
         action: "occupancy-changed",
-        roomId: contract?.room?.toString(),
+        roomId: recordId(contract?.room),
         occurredAt: new Date().toISOString(),
       });
   }
@@ -180,58 +184,6 @@ class StudentContractController {
     }
   }
 
-  async validateRoom(payload, res, excludeContractId = null) {
-    if (!mongoose.isValidObjectId(payload.room))
-      return ApiResponse.badRequest(res, "Xonani tanlang");
-    const [student, room] = await Promise.all([
-      Student.findById(payload.student),
-      Room.findById(payload.room),
-    ]);
-    if (!student)
-      return ApiResponse.badRequest(res, "Talabani to‘g‘ri tanlang");
-    if (!room) return ApiResponse.badRequest(res, "Xona topilmadi");
-    if (room.gender !== student.gender)
-      return ApiResponse.badRequest(res, "Xona talabaning jinsiga mos emas");
-    if (payload.status === "active" && room.status === "maintenance")
-      return ApiResponse.badRequest(
-        res,
-        "Ta’mirdagi xonaga talaba biriktirib bo‘lmaydi",
-      );
-    if (payload.status === "active") {
-      const activeStudentContract = {
-        student: student._id,
-        status: "active",
-        ...(excludeContractId ? { _id: { $ne: excludeContractId } } : {}),
-      };
-      if (await StudentContract.exists(activeStudentContract))
-        return ApiResponse.conflict(
-          res,
-          "Talabaning boshqa aktiv shartnomasi mavjud",
-        );
-      const filter = {
-        room: room._id,
-        status: "active",
-        ...(excludeContractId ? { _id: { $ne: new mongoose.Types.ObjectId(excludeContractId) } } : {}),
-      };
-      const occupiedRows = await StudentContract.aggregate([
-        { $match: filter },
-        {
-          $lookup: {
-            from: "students",
-            localField: "student",
-            foreignField: "_id",
-            as: "studentDocument",
-          },
-        },
-        { $match: { "studentDocument.0": { $exists: true }, "studentDocument.0.isDeleted": { $ne: true } } },
-        { $count: "count" },
-      ]);
-      if ((occupiedRows[0]?.count || 0) >= room.capacity)
-        return ApiResponse.conflict(res, "Bu xonada bo‘sh o‘rin qolmagan");
-    }
-    return null;
-  }
-
   listByStudent = async (req, res, next) => {
     try {
       if (!mongoose.isValidObjectId(req.params.studentId))
@@ -252,6 +204,8 @@ class StudentContractController {
 
   listActive = async (req, res, next) => {
     try {
+      const cancellationPeriod = cancelledReportPeriod(req.query.cancelledPeriod, req.query.cancelledView, periodKeyInTashkent(new Date()));
+      if (!cancellationPeriod) return ApiResponse.badRequest(res, 'Bekor qilingan shartnomalar hisobining oyini yoki yilini to‘g‘ri tanlang');
       const today = new Date();
       today.setHours(0, 0, 0, 0);
       const tomorrow = new Date(today);
@@ -327,8 +281,8 @@ class StudentContractController {
       const cancelledIds = summaryContracts.filter((contract) => contract.status === 'cancelled').map((contract) => contract._id);
       const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
       const monthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 1);
-      const currentMonthCancelledIds = summaryContracts
-        .filter((contract) => contract.status === 'cancelled' && contract.cancelledAt >= monthStart && contract.cancelledAt < monthEnd)
+      const selectedCancelledIds = summaryContracts
+        .filter((contract) => contract.status === 'cancelled' && contract.cancelledAt >= cancellationPeriod.start && contract.cancelledAt < cancellationPeriod.end)
         .map((contract) => contract._id);
       const pageIds = pageRows.map((row) => row._id);
       const [currentMonthRows, cancelledPaidRows, cancelledPaidByPeriodRows, pageContracts] = await Promise.all([
@@ -340,12 +294,17 @@ class StudentContractController {
           { $match: { contract: { $in: cancelledIds }, student: { $in: validStudentIds }, paymentPurpose: { $ne: 'deposit' }, status: 'active', cancelledAt: null, createdAt: { $gte: monthStart, $lt: monthEnd } } },
           { $group: { _id: null, amount: { $sum: '$amount' } } },
         ]) : [],
-        currentMonthCancelledIds.length ? Payment.aggregate([
-          { $match: { contract: { $in: currentMonthCancelledIds }, student: { $in: validStudentIds }, paymentPurpose: { $ne: 'deposit' }, status: 'active', cancelledAt: null } },
+        selectedCancelledIds.length ? Payment.aggregate([
+          { $match: { contract: { $in: selectedCancelledIds }, student: { $in: validStudentIds }, paymentPurpose: { $ne: 'deposit' }, status: 'active', cancelledAt: null } },
+          { $lookup: { from: StudentContract.collection.name, localField: 'contract', foreignField: '_id', as: 'cancelledContract' } },
+          { $unwind: '$cancelledContract' },
           { $unwind: '$allocations' },
           { $lookup: { from: ContractInstallment.collection.name, localField: 'allocations.installment', foreignField: '_id', as: 'installment' } },
           { $unwind: '$installment' },
-          { $match: { 'installment.periodKey': { $gt: currentPeriod }, $expr: { $eq: ['$installment.contract', '$contract'] } } },
+          { $match: { $expr: { $and: [
+            { $eq: ['$installment.contract', '$contract'] },
+            { $gt: ['$installment.periodKey', { $dateToString: { format: '%Y-%m', date: '$cancelledContract.cancelledAt', timezone: 'Asia/Tashkent' } }] },
+          ] } } },
           { $group: { _id: '$installment.periodKey', amount: { $sum: '$allocations.amount' } } },
           { $sort: { _id: 1 } },
         ]) : [],
@@ -369,6 +328,8 @@ class StudentContractController {
       summary.cancelledPaidAmount = cancelledPaidRows[0]?.amount || 0;
       summary.cancelledFuturePaidByPeriod = cancelledPaidByPeriodRows.map((row) => ({ period: row._id, amount: row.amount }));
       summary.cancelledFuturePaidAmount = summary.cancelledFuturePaidByPeriod.reduce((totalAmount, row) => totalAmount + row.amount, 0);
+      summary.cancelledReportPeriod = cancellationPeriod.period;
+      summary.cancelledReportView = cancellationPeriod.mode;
       const contractsById = new Map(pageContracts.filter((contract) => contract.student && contract.room).map((contract) => [contract.id, contract]));
       const rows = pageIds.map((id) => contractsById.get(String(id))).filter(Boolean);
       return ApiResponse.ok(res, { contracts: rows, summary, pagination: { page, limit, total, totalPages } });
@@ -387,15 +348,16 @@ class StudentContractController {
         return ApiResponse.badRequest(res, "Deposit summasi 0 dan katta bo‘lishi kerak");
       if (!mongoose.isValidObjectId(payload.student))
         return ApiResponse.badRequest(res, "Talabani to‘g‘ri tanlang");
-      if (await this.validateRoom(payload, res)) return undefined;
-      if (new Date(payload.endDate) <= new Date(payload.startDate))
-        return ApiResponse.badRequest(
-          res,
-          "Tugash sanasi boshlanish sanasidan keyin bo‘lishi kerak",
-        );
-      const contract = await StudentContract.create(payload);
-      await this.syncInstallments(contract);
-      await contract.populate("room", "roomNumber block floor");
+      if (!payload.durationDays)
+        return ApiResponse.badRequest(res, "Tugash sanasi boshlanish sanasidan keyin bo‘lishi kerak");
+      const contract = new StudentContract(payload);
+      await contract.validate();
+      await mongoose.connection.transaction(async (session) => {
+        await reserveRoomBed(payload, session);
+        await contract.save({ session });
+        await ContractInstallment.insertMany(buildContractInstallments(contract), { session });
+        await contract.populate({ path: "room", select: "roomNumber block floor", options: { session } });
+      });
       this.emitChange(req, "created", contract);
       return ApiResponse.created(res, { contract }, "Shartnoma tuzildi");
     } catch (error) {
@@ -423,12 +385,6 @@ class StudentContractController {
         return ApiResponse.badRequest(res, "Talabani to‘g‘ri tanlang");
       const current = await StudentContract.findById(req.params.id);
       if (!current) return ApiResponse.notFound(res, "Shartnoma topilmadi");
-      const bindingChanged = String(current.room) !== String(payload.room) || String(current.student) !== String(payload.student);
-      const datesRequested =
-        current.startDate.getTime() !== new Date(payload.startDate).getTime() ||
-        current.endDate.getTime() !== new Date(payload.endDate).getTime();
-      if (current.status !== "cancelled" && (bindingChanged || !datesRequested) && await this.validateRoom(payload, res, req.params.id))
-        return undefined;
       const { contract, conflict } = await mongoose.connection.transaction(async (session) => {
         const existing = await StudentContract.findById(req.params.id).session(session);
         if (!existing) return {};
@@ -444,6 +400,10 @@ class StudentContractController {
           ...payload,
           cancelledAt: payload.status === "cancelled" ? new Date() : existing.cancelledAt,
         };
+        if (!isCancelled) {
+          if (changes.bedNumber == null && String(existing.room) === String(changes.room)) changes.bedNumber = existing.bedNumber;
+          await reserveRoomBed(changes, session, { excludeContractId: existing._id, previousRoom: existing.room });
+        }
         const paymentTypeChanged = !isCancelled && existing.paymentType !== payload.paymentType;
         const rateChanged = !isCancelled && existing.paymentAmount !== payload.paymentAmount;
         if (paymentTypeChanged || rateChanged) {

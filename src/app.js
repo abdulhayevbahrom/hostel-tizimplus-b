@@ -22,6 +22,7 @@ import { reportRouter } from './routes/reportRoutes.js'
 import { notificationRouter } from './routes/notificationRoutes.js'
 import { cashSessionRouter } from './routes/cashSessionRoutes.js'
 import { ApiResponse } from './utils/response.js'
+import { RoomBedError } from './utils/roomBeds.js'
 import { isAllowedOrigin } from './config/origins.js'
 import { identifyEmployee } from './middleware/auth.js'
 import { auditMutation } from './middleware/audit.js'
@@ -72,6 +73,7 @@ app.use('/api/complaints', complaintRouter)
 
 app.use((_req, res) => ApiResponse.notFound(res, 'API manzili topilmadi'))
 app.use((error, _req, res, _next) => {
+  if (error instanceof RoomBedError) return ApiResponse.send(res, error.status, null, error.message)
   console.error(error)
   if (error?.code === 11000) {
     const message = error.keyPattern?.roomNumber

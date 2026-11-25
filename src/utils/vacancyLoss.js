@@ -16,12 +16,18 @@ export function vacancyLoss({ period, todayKey, dailyRate, rooms, contracts }) {
   }
   const eligibleRooms = rooms.filter((room) => room.status === 'available')
   const occupiedOnDay = (room, start, end) => {
-    const occupied = new Set()
+    const occupied = new Map()
     for (const contract of contractsByRoom.get(id(room)) || []) {
       if (!contract.student || new Date(contract.startDate) > end || new Date(contract.endDate) < start) continue
       if (contract.status === 'cancelled' && (!contract.cancelledAt || new Date(contract.cancelledAt) <= end)) continue
       if (ended(contract, end) || ended(contract.student, end)) continue
-      occupied.add(id(contract.student))
+      const studentId = id(contract.student)
+      const previous = occupied.get(studentId)
+      // If contracts overlap, show the most recently started one for this day.
+      if (!previous || new Date(contract.startDate) > new Date(previous.startDate)
+        || (+new Date(contract.startDate) === +new Date(previous.startDate) && id(contract) > id(previous))) {
+        occupied.set(studentId, contract)
+      }
     }
     return occupied
   }
@@ -39,8 +45,8 @@ export function vacancyLoss({ period, todayKey, dailyRate, rooms, contracts }) {
     const roomRows = eligibleRooms.map((room) => {
       let vacantBedDays = 0
       let capacityBedDays = 0
-      // These are inferred slots, not recorded physical bed numbers. Keep each
-      // continuing resident in the same slot instead of repacking every day.
+      // Recorded bed numbers take priority. Only historical unnumbered stays
+      // use inferred slots, retaining their place while the resident continues.
       const slots = Array(room.capacity).fill(null)
       for (let day = 1; day <= days; day += 1) {
         const start = parsePaymentDate(`${monthKey}-${String(day).padStart(2, '0')}`)
@@ -52,10 +58,15 @@ export function vacancyLoss({ period, todayKey, dailyRate, rooms, contracts }) {
         vacantBedDays += vacantBeds
         if (monthKey === period) {
           for (let index = 0; index < slots.length; index += 1) {
-            if (!occupied.has(slots[index])) slots[index] = null
+            if (!occupied.has(slots[index]) || occupied.get(slots[index])?.bedNumber) slots[index] = null
+          }
+          for (const [student, contract] of occupied) {
+            if (Number.isInteger(contract.bedNumber) && contract.bedNumber >= 1 && contract.bedNumber <= slots.length) {
+              slots[contract.bedNumber - 1] = student
+            }
           }
           const assigned = new Set(slots.filter(Boolean))
-          for (const student of [...occupied].sort()) {
+          for (const student of [...occupied.keys()].sort()) {
             if (assigned.has(student)) continue
             const index = slots.indexOf(null)
             if (index === -1) break
@@ -65,7 +76,12 @@ export function vacancyLoss({ period, todayKey, dailyRate, rooms, contracts }) {
           if (!dailyRows[day - 1]) dailyRows[day - 1] = []
           dailyRows[day - 1].push({ id: id(room), roomNumber: room.roomNumber, block: room.block, floor: room.floor,
             capacityBedDays: room.capacity, vacantBedDays: vacantBeds, loss: vacantBeds * rate,
-            bedStates: slots.map((student) => student ? 'occupied' : 'vacant') })
+            bedStates: slots.map((student) => student ? 'occupied' : 'vacant'),
+            bedOccupants: slots.map((studentId) => {
+              const contract = occupied.get(studentId)
+              return contract ? { studentId, fullName: contract.student.fullName || '',
+                startDate: contract.startDate, endDate: contract.endDate } : null
+            }) })
         }
       }
       return { id: id(room), roomNumber: room.roomNumber, block: room.block, floor: room.floor, capacityBedDays, vacantBedDays, loss: vacantBedDays * rate }

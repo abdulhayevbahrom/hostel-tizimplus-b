@@ -5,6 +5,7 @@ import { Student } from '../src/models/Student.js'
 import { StudentContract } from '../src/models/StudentContract.js'
 import { ContractInstallment } from '../src/models/ContractInstallment.js'
 import { Payment } from '../src/models/Payment.js'
+import { Room } from '../src/models/Room.js'
 
 const queryResult = (value) => ({
   select() { return this },
@@ -12,6 +13,57 @@ const queryResult = (value) => ({
   lean() { return Promise.resolve(value) },
   populate() { return this },
   then(resolve, reject) { return Promise.resolve(value).then(resolve, reject) },
+})
+
+test('contract creation date filters run before pagination and combine with room and student filters', async (t) => {
+  const students = Array.from({ length: 30 }, (_, index) => ({ _id: String(index), id: String(index),
+    studentStatus: 'green', toJSON() { return { id: this.id } } }))
+  const allIds = students.map((student) => student.id)
+  const matchingIds = allIds.slice(0, 27)
+  const matches = (filter, id) => (!filter._id?.$in || filter._id.$in.includes(id))
+    && (!filter._id?.$nin || !filter._id.$nin.includes(id)) && (filter.$and || []).every((part) => matches(part, id))
+  let dateFilter
+  t.mock.method(StudentContract, 'distinct', async (field, filter) => {
+    if (field === '_id') return []
+    if (filter?.createdAt) { dateFilter = filter; return matchingIds }
+    if (filter?.room) return allIds.slice(1)
+    return allIds
+  })
+  t.mock.method(Room, 'distinct', async () => ['room-1'])
+  t.mock.method(Student, 'distinct', async (_, filter) => {
+    assert.equal(filter.studentStatus, 'green')
+    return allIds.filter((id) => matches(filter, id))
+  })
+  t.mock.method(StudentContract, 'find', () => queryResult([]))
+  t.mock.method(ContractInstallment, 'find', () => queryResult([]))
+  t.mock.method(Payment, 'find', () => queryResult([]))
+  t.mock.method(Student, 'find', (filter) => {
+    let rows = students.filter((student) => matches(filter, student.id))
+    const query = queryResult(rows)
+    query.skip = (count) => { rows = rows.slice(count); return query }
+    query.limit = (count) => queryResult(rows.slice(0, count))
+    return query
+  })
+  let response
+  await studentController.list({ query: { contractCreatedFrom: '2026-11-01', contractCreatedTo: '2026-11-25',
+    room: '6ad7960a9dc576031fa78b2a', studentStatus: 'green', page: '2' } }, {
+    status(code) { assert.equal(code, 200); return this }, json(body) { response = body.data },
+  }, (error) => { throw error })
+  assert.equal(dateFilter.createdAt.$gte.toISOString(), '2026-10-31T19:00:00.000Z')
+  assert.equal(dateFilter.createdAt.$lt.toISOString(), '2026-11-25T19:00:00.000Z')
+  assert.equal(dateFilter.startDate, undefined)
+  assert.equal(response.pagination.total, 26)
+  assert.deepEqual(response.students.map((student) => student.id), ['26'])
+})
+
+test('contract date filtering rejects invalid, incomplete or reversed ranges', async () => {
+  for (const [from, to] of [['2026-02-30', '2026-03-01'], ['2026-11-25', '2026-11-01'], ['2026-11-01', undefined]]) {
+    let status
+    await studentController.list({ query: { contractCreatedFrom: from, contractCreatedTo: to } }, {
+      status(code) { status = code; return this }, json() {},
+    }, (error) => { throw error })
+    assert.equal(status, 400)
+  }
 })
 
 test('monthly payment filters apply before pagination and combine with other filters', async (t) => {
