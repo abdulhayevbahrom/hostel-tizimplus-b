@@ -117,3 +117,30 @@ test('migration defaults to a dry run and writes missing bed numbers transaction
   assert.equal((await migrateLegacyRoomBeds({ dryRun: false })).assignedContracts, 0)
   assert.equal(writes.length, 1)
 })
+
+test('startup migration skips conflicting rooms and still numbers healthy rooms, while the CLI remains strict', async (t) => {
+  const conflictRoom = { ...room, _id: new mongoose.Types.ObjectId(), roomNumber: '3', capacity: 1 }
+  const conflictContracts = [stay(new mongoose.Types.ObjectId()), stay(new mongoose.Types.ObjectId())]
+  const healthy = stay(new mongoose.Types.ObjectId())
+  const session = {}, writes = []
+  t.mock.method(Room, 'find', () => query([conflictRoom, room]))
+  t.mock.method(Room, 'findOneAndUpdate', async () => room)
+  t.mock.method(StudentContract, 'find', ({ room: id }) => query(String(id) === String(conflictRoom._id) ? conflictContracts : [healthy]))
+  t.mock.method(mongoose.connection, 'transaction', async (callback) => callback(session))
+  t.mock.method(StudentContract, 'bulkWrite', async (operations, options) => {
+    assert.equal(options.session, session)
+    writes.push(...operations)
+  })
+  await assert.rejects(migrateLegacyRoomBeds(), RoomBedError)
+  const preview = await migrateLegacyRoomBeds({ skipConflicts: true })
+  assert.equal(preview.assignedContracts, 1)
+  assert.equal(preview.conflicts.length, 1)
+  assert.equal(writes.length, 0)
+  const report = await migrateLegacyRoomBeds({ dryRun: false, skipConflicts: true })
+  assert.equal(report.assignedContracts, 1)
+  assert.equal(report.conflicts[0].roomNumber, '3')
+  assert.match(report.conflicts[0].message, /sig‘imidan oshgan/)
+  assert.equal(writes.length, 1)
+  assert.equal(String(writes[0].updateOne.filter._id), String(healthy._id))
+  assert.equal(conflictContracts.every((item) => item.bedNumber == null), true)
+})

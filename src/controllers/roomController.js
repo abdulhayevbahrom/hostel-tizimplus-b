@@ -79,9 +79,16 @@ class RoomController {
         byRoom.get(key).push(contract)
       }
       const rooms = roomDocuments.map((room) => {
-        const beds = roomBedState(room, byRoom.get(room.id) || [], range, req.query.excludeContractId)
-        return { ...room.toJSON(), beds, occupiedCount: beds.filter((bed) => bed.occupied).length,
-          availableBeds: beds.filter((bed) => bed.available).map((bed) => bed.number) }
+        try {
+          const beds = roomBedState(room, byRoom.get(room.id) || [], range, req.query.excludeContractId)
+          return { ...room.toJSON(), beds, occupiedCount: beds.filter((bed) => bed.occupied).length,
+            availableBeds: beds.filter((bed) => bed.available).map((bed) => bed.number) }
+        } catch (error) {
+          if (!(error instanceof RoomBedError)) throw error
+          // Keep the room accessible for correcting legacy contracts, but never
+          // advertise free beds when their allocation could not be verified.
+          return { ...room.toJSON(), beds: [], occupiedCount: null, availableBeds: [], bedAllocationError: error.message }
+        }
       })
       const summary = rooms.reduce((result, room) => {
         result.totalRooms += 1

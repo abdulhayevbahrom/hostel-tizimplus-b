@@ -31,8 +31,9 @@ try {
   await AuditLog.syncIndexes()
   await syncContractStatuses()
   if (await StudentContract.exists({ status: 'active', bedNumber: null })) {
-    const report = await migrateLegacyRoomBeds({ dryRun: false })
+    const report = await migrateLegacyRoomBeds({ dryRun: false, skipConflicts: true })
     console.log(`${report.assignedContracts} ta eski shartnomaga o‘rin raqami ajratildi`)
+    for (const conflict of report.conflicts) console.warn(conflict.message)
   }
   await createContractExpiryNotification(io)
   await createDebtorDeadlineNotification(io)

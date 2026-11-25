@@ -45,14 +45,23 @@ export async function reserveRoomBed(payload, session, { newStudent = null, excl
   return room
 }
 
-export async function migrateLegacyRoomBeds({ dryRun = true } = {}) {
+export async function migrateLegacyRoomBeds({ dryRun = true, skipConflicts = false } = {}) {
   const run = async (session = null) => {
     const rooms = await Room.find().sort({ _id: 1 }).session(session).lean()
     const report = []
+    const conflicts = []
     for (const original of rooms) {
       const contracts = (await loadRoomBedContracts(original._id, session))
         .filter((contract) => contract.status === 'active' && hasLivingStudent(contract))
-      const { assignments } = assignLegacyBedNumbers(original, contracts)
+      let plan
+      try {
+        plan = assignLegacyBedNumbers(original, contracts)
+      } catch (error) {
+        if (!skipConflicts || !(error instanceof RoomBedError)) throw error
+        conflicts.push({ roomId: recordId(original), roomNumber: original.roomNumber, block: original.block, message: error.message })
+        continue
+      }
+      const { assignments } = plan
       if (!assignments.length) continue
       const room = session ? (await lockRooms([original._id], session)).get(recordId(original)) : original
       if (session) await StudentContract.bulkWrite(assignments.map(({ contractId, bedNumber }) => ({
@@ -62,7 +71,7 @@ export async function migrateLegacyRoomBeds({ dryRun = true } = {}) {
       report.push({ roomId: recordId(room), roomNumber: room.roomNumber, block: room.block,
         assignments })
     }
-    return { dryRun, assignedContracts: report.reduce((sum, row) => sum + row.assignments.length, 0), rooms: report }
+    return { dryRun, assignedContracts: report.reduce((sum, row) => sum + row.assignments.length, 0), rooms: report, conflicts }
   }
   return dryRun ? run() : mongoose.connection.transaction((session) => run(session))
 }

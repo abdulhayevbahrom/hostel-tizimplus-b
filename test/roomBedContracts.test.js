@@ -80,3 +80,41 @@ test('room availability API returns the exact free numbers for the requested dat
     assert.deepEqual(res.body.data.availableBeds, expected)
   }
 })
+
+test('an overcapacity legacy room does not block the room list or advertise unverified beds', async (t) => {
+  const conflictId = new mongoose.Types.ObjectId()
+  const conflictRoom = { ...room, _id: conflictId, id: String(conflictId), roomNumber: '3', capacity: 1 }
+  const documents = [room, conflictRoom].map((value) => ({ ...value, toJSON: () => ({ ...value }) }))
+  const occupants = [1, 2].map((number) => ({
+    _id: new mongoose.Types.ObjectId(), room: conflictId, student: { _id: `student-${number}` },
+    startDate: '2026-11-01', endDate: '2026-11-30', status: 'active', bedNumber: null,
+  }))
+  t.mock.method(Room, 'find', () => query(documents))
+  t.mock.method(StudentContract, 'find', () => query(occupants))
+  const res = response()
+  await roomController.list({ query: { period: '2026-11' } }, res, (error) => { throw error })
+  assert.equal(res.code, 200)
+  assert.equal(res.body.data.rooms.length, 2)
+  assert.equal(res.body.data.summary.totalBeds, 5)
+  const healthy = res.body.data.rooms.find((item) => item.id === room.id)
+  assert.deepEqual(healthy.availableBeds, [1, 2, 3, 4])
+  const conflict = res.body.data.rooms.find((item) => item.id === conflictRoom.id)
+  assert.match(conflict.bedAllocationError, /3-xona/)
+  assert.deepEqual(conflict.beds, [])
+  assert.deepEqual(conflict.availableBeds, [])
+  assert.equal(conflict.occupiedCount, null)
+
+  // The display fallback must never be used to approve an actual booking.
+  t.mock.method(Room, 'findById', async () => conflictRoom)
+  let error
+  await roomController.beds({ params: { id: String(conflictId) }, query: { period: '2026-11' } }, response(), (value) => { error = value })
+  assert.equal(error.status, 409)
+})
+
+test('room listing forwards unexpected errors instead of hiding them as allocation conflicts', async (t) => {
+  const failure = new Error('Database unavailable')
+  t.mock.method(Room, 'find', () => { throw failure })
+  let error
+  await roomController.list({ query: {} }, response(), (value) => { error = value })
+  assert.equal(error, failure)
+})
