@@ -9,7 +9,8 @@ import { StudentContract } from '../models/StudentContract.js'
 import { University } from '../models/University.js'
 import { ApiResponse } from '../utils/response.js'
 import { uploadImages } from '../utils/imgbb.js'
-import { parsePaymentDate, paymentTimingDetails, periodKeyInTashkent } from '../utils/paymentTime.js'
+import { parsePaymentDate, paymentTimingDetails, periodKeyInTashkent, tashkentDayStart, tashkentDayEnd } from '../utils/paymentTime.js'
+import { contractExpiryRange } from '../utils/contractExpiry.js'
 import { studentContractController } from './studentContractController.js'
 import { reserveRoomBed } from '../services/roomBeds.js'
 import { buildContractInstallments } from '../utils/contractPayment.js'
@@ -198,8 +199,8 @@ class StudentController {
       const floor = String(req.query.floor || '').trim().slice(0, 30)
       if (mongoose.isValidObjectId(req.query.room) || floor) {
         const now = new Date()
-        const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-        const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999)
+        const todayStart = tashkentDayStart(now)
+        const todayEnd = tashkentDayEnd(now)
         const roomFilter = {}
         if (mongoose.isValidObjectId(req.query.room)) roomFilter._id = req.query.room
         if (floor) roomFilter.floor = floor
@@ -220,8 +221,15 @@ class StudentController {
         const studentIds = await StudentContract.distinct('student', { createdAt: { $gte: start, $lt: new Date(end.getTime() + 86400000) } })
         filter.$and = [...(filter.$and || []), { _id: { $in: studentIds } }]
       }
-      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-      const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999)
+      const todayStart = tashkentDayStart(now)
+      const todayEnd = tashkentDayEnd(now)
+      const expiryRange = contractExpiryRange(req.query)
+      if (!expiryRange) return ApiResponse.badRequest(res, 'Shartnoma tugash sanasi oralig‘ini to‘g‘ri tanlang')
+      const activeContractFilter = { status: 'active', startDate: { $lte: todayEnd }, endDate: { ...expiryRange, $gte: new Date(Math.max(todayStart.getTime(), expiryRange.$gte?.getTime() || 0)) } }
+      if (expiryRange.$gte) {
+        const studentIds = await StudentContract.distinct('student', activeContractFilter)
+        filter.$and = [...(filter.$and || []), { _id: { $in: studentIds } }]
+      }
       const [contractStudentIds, currentContractStudentIds] = await Promise.all([
         StudentContract.distinct('student'),
         StudentContract.distinct('student', { status: 'active', startDate: { $lte: todayEnd }, endDate: { $gte: todayStart } }),
@@ -309,20 +317,43 @@ class StudentController {
       const total = filteredStudentIds.length
       const totalPages = Math.max(1, Math.ceil(total / limit))
       const currentPage = Math.min(page, totalPages)
-      const students = await Student.find(filter)
+      const pageRows = await Student.aggregate([
+        { $match: { _id: { $in: filteredStudentIds } } },
+        { $lookup: {
+          from: StudentContract.collection.name,
+          localField: '_id',
+          foreignField: 'student',
+          pipeline: [
+            { $match: { ...activeContractFilter, isDeleted: { $ne: true } } },
+            { $group: { _id: null, endDate: { $min: '$endDate' } } },
+          ],
+          as: 'contractDeadline',
+        } },
+        { $addFields: { contractEndSort: { $ifNull: [{ $arrayElemAt: ['$contractDeadline.endDate', 0] }, new Date('9999-12-31')] } } },
+        { $sort: { contractEndSort: 1, createdAt: -1, _id: 1 } },
+        { $skip: (currentPage - 1) * limit },
+        { $limit: limit },
+        { $project: { _id: 1 } },
+      ])
+      const pageIds = pageRows.map((row) => row._id)
+      const pageStudents = await Student.find({ _id: { $in: pageIds } })
         .populate('university', 'name shortName')
         .populate('faculty', 'name')
-        .sort({ createdAt: -1 })
-        .skip((currentPage - 1) * limit)
-        .limit(limit)
-      const activeContracts = await StudentContract.find({ student: { $in: students.map((student) => student._id) }, status: 'active', startDate: { $lte: todayEnd }, endDate: { $gte: todayStart } })
+      const studentsById = new Map(pageStudents.map((student) => [student.id, student]))
+      const students = pageIds.map((id) => studentsById.get(id.toString())).filter(Boolean)
+      const activeContracts = await StudentContract.find({ ...activeContractFilter, student: { $in: pageIds } })
         .select('student room bedNumber createdAt startDate endDate')
         .populate('room', 'roomNumber block floor')
+        .sort({ endDate: 1, createdAt: -1, _id: 1 })
       const studentsWithContract = new Set((await StudentContract.distinct('student', {
         student: { $in: students.map((student) => student._id) },
         status: { $ne: 'cancelled' },
       })).map((id) => id.toString()))
-      const activeContractByStudent = new Map(activeContracts.map((contract) => [contract.student.toString(), contract]))
+      const activeContractByStudent = new Map()
+      activeContracts.forEach((contract) => {
+        const id = contract.student.toString()
+        if (!activeContractByStudent.has(id)) activeContractByStudent.set(id, contract)
+      })
       const rows = students.map((student) => {
         const activeContract = activeContractByStudent.get(student.id)
         const payment = currentPaymentByStudent.get(student.id)

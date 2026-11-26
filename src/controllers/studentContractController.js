@@ -14,6 +14,7 @@ import { reserveRoomBed } from "../services/roomBeds.js";
 import { recordId } from "../utils/roomBeds.js";
 import { cancelledReportPeriod } from "../utils/cancelledReportPeriod.js";
 import { applyDepositPolicy, lockDeposit, validateDepositPolicy } from "../services/deposits.js";
+import { contractExpiryRange } from "../utils/contractExpiry.js";
 
 class StudentContractController {
   cleanPayload(body) {
@@ -206,18 +207,19 @@ class StudentContractController {
 
   listActive = async (req, res, next) => {
     try {
+      const expiryRange = contractExpiryRange(req.query);
+      if (!expiryRange) return ApiResponse.badRequest(res, 'Shartnoma tugash sanasi oralig‘ini to‘g‘ri tanlang');
       const cancellationPeriod = cancelledReportPeriod(req.query.cancelledPeriod, req.query.cancelledView, periodKeyInTashkent(new Date()));
       if (!cancellationPeriod) return ApiResponse.badRequest(res, 'Bekor qilingan shartnomalar hisobining oyini yoki yilini to‘g‘ri tanlang');
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
+      const today = tashkentDayStart(new Date());
       const tomorrow = new Date(today);
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      const filter = { status: "active", startDate: { $lt: tomorrow }, endDate: { $gte: today } };
-      if (mongoose.isValidObjectId(req.query.room)) filter.room = req.query.room;
+      tomorrow.setTime(tomorrow.getTime() + 86400000);
+      const filter = { status: "active", startDate: { $lt: tomorrow }, endDate: { ...expiryRange, $gte: new Date(Math.max(today.getTime(), expiryRange.$gte?.getTime() || 0)) } };
+      if (mongoose.isValidObjectId(req.query.room)) filter.room = new mongoose.Types.ObjectId(req.query.room);
       if (["student_contract", "standard_contract"].includes(req.query.contractType)) {
         filter.student = { $in: await Student.distinct("_id", { hasTaxContract: true, taxContractType: req.query.contractType }) };
       }
-      const currentPeriod = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
+      const currentPeriod = periodKeyInTashkent(today);
       const summaryFilter = {
         ...(filter.student ? { student: filter.student } : {}),
         ...(filter.room ? { room: filter.room } : {}),
@@ -247,18 +249,12 @@ class StudentContractController {
 
       const limit = req.query.export === "1" ? 5000 : 25;
       const requestedPage = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
-      const warningLimit = new Date(today);
-      warningLimit.setDate(warningLimit.getDate() + 3);
       let [summaryContracts, total, pageRows] = await Promise.all([
         StudentContract.find(summaryFilter).select("_id status cancelledAt").lean(),
         StudentContract.countDocuments(filter),
         StudentContract.aggregate([
           { $match: filter },
-          { $addFields: {
-            warningRank: { $cond: [{ $lt: ["$endDate", warningLimit] }, 0, 1] },
-            warningEndDate: { $cond: [{ $lt: ["$endDate", warningLimit] }, "$endDate", null] },
-          } },
-          { $sort: { warningRank: 1, warningEndDate: 1, createdAt: -1 } },
+          { $sort: { endDate: 1, createdAt: -1, _id: 1 } },
           { $skip: (requestedPage - 1) * limit },
           { $limit: limit },
           { $project: { _id: 1 } },
@@ -269,11 +265,7 @@ class StudentContractController {
       if (page !== requestedPage) {
         pageRows = await StudentContract.aggregate([
           { $match: filter },
-          { $addFields: {
-            warningRank: { $cond: [{ $lt: ["$endDate", warningLimit] }, 0, 1] },
-            warningEndDate: { $cond: [{ $lt: ["$endDate", warningLimit] }, "$endDate", null] },
-          } },
-          { $sort: { warningRank: 1, warningEndDate: 1, createdAt: -1 } },
+          { $sort: { endDate: 1, createdAt: -1, _id: 1 } },
           { $skip: (page - 1) * limit },
           { $limit: limit },
           { $project: { _id: 1 } },
@@ -281,8 +273,7 @@ class StudentContractController {
       }
       const summaryContractIds = summaryContracts.map((contract) => contract._id);
       const cancelledIds = summaryContracts.filter((contract) => contract.status === 'cancelled').map((contract) => contract._id);
-      const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
-      const monthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+      const { start: monthStart, end: monthEnd } = cancelledReportPeriod(currentPeriod, 'month', currentPeriod);
       const selectedCancelledIds = summaryContracts
         .filter((contract) => contract.status === 'cancelled' && contract.cancelledAt >= cancellationPeriod.start && contract.cancelledAt < cancellationPeriod.end)
         .map((contract) => contract._id);

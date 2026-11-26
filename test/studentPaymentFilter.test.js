@@ -37,6 +37,12 @@ test('contract creation date filters run before pagination and combine with room
   t.mock.method(StudentContract, 'find', () => queryResult([]))
   t.mock.method(ContractInstallment, 'find', () => queryResult([]))
   t.mock.method(Payment, 'find', () => queryResult([]))
+  t.mock.method(Student, 'aggregate', async (pipeline) => {
+    const ids = pipeline[0].$match._id.$in.map(String)
+    const offset = pipeline.find((stage) => stage.$skip !== undefined).$skip
+    const limit = pipeline.find((stage) => stage.$limit).$limit
+    return students.filter((student) => ids.includes(student.id)).slice(offset, offset + limit)
+  })
   t.mock.method(Student, 'find', (filter) => {
     let rows = students.filter((student) => matches(filter, student.id))
     const query = queryResult(rows)
@@ -77,7 +83,10 @@ test('monthly payment filters apply before pagination and combine with other fil
     installment('pending', '27', '2100-01-01'),
     installment('mixed-pending', '26', '2100-01-01'),
   ]
-  t.mock.method(Student, 'distinct', async () => students.map((student) => student.id))
+  t.mock.method(Student, 'distinct', async (_, filter) => {
+    assert.equal(filter.studentStatus, 'green')
+    return students.map((student) => student.id)
+  })
   t.mock.method(StudentContract, 'distinct', async () => [])
   t.mock.method(StudentContract, 'find', () => queryResult([]))
   t.mock.method(ContractInstallment, 'find', () => queryResult(installments))
@@ -87,9 +96,15 @@ test('monthly payment filters apply before pagination and combine with other fil
     { paymentDate: '2000-02-03', allocations: [{ installment: 'late', amount: 25 }] },
   ]))
   let receivedFilter
+  t.mock.method(Student, 'aggregate', async (pipeline) => {
+    const ids = pipeline[0].$match._id.$in.map(String)
+    const offset = pipeline.find((stage) => stage.$skip !== undefined).$skip
+    const limit = pipeline.find((stage) => stage.$limit).$limit
+    return students.filter((student) => ids.includes(student.id)).slice(offset, offset + limit)
+  })
   t.mock.method(Student, 'find', (filter) => {
     receivedFilter = filter
-    const selectedIds = filter.$and?.find((part) => part._id?.$in)?._id.$in
+    const selectedIds = filter._id.$in
     let rows = students.filter((student) => !selectedIds || selectedIds.includes(student.id))
     const query = queryResult(rows)
     query.skip = (count) => { rows = rows.slice(count); return query }
@@ -109,7 +124,7 @@ test('monthly payment filters apply before pagination and combine with other fil
     }, (error) => { throw error })
     assert.deepEqual(response.students.map((student) => student.id), expectedIds)
     assert.equal(response.pagination.total, total)
-    assert.equal(receivedFilter.studentStatus, 'green')
+    assert.deepEqual(receivedFilter._id.$in.map(String), expectedIds)
     for (const student of response.students) {
       const expectedDueDate = student.id === '28' ? null : student.id === '27' ? '2100-01-01' : '2000-01-01'
       assert.equal(student.currentPaymentDueDate, expectedDueDate)
