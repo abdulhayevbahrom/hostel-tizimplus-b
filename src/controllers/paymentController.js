@@ -9,7 +9,9 @@ import { Student } from '../models/Student.js'
 import { GeneralSetting } from '../models/GeneralSetting.js'
 import { ApiResponse } from '../utils/response.js'
 import { parsePaymentDate, periodKeyInTashkent, tashkentDayEnd, tashkentDayStart } from '../utils/paymentTime.js'
-import { contractDepositAmount, studentDepositAmount } from '../utils/contractDeposit.js'
+import { contractDepositAmount } from '../utils/contractDeposit.js'
+import { depositPeriod, depositStates, depositTotals, lockDeposit, depositError } from '../services/deposits.js'
+import { DepositRefund } from '../models/DepositRefund.js'
 import { buildPaymentParts, effectivePaymentParts, PAYMENT_METHODS, paymentFundHolderValue, paymentMethodValue, paymentPartsTotal } from '../utils/paymentParts.js'
 
 const paymentPopulate = [
@@ -22,7 +24,7 @@ const paymentPopulate = [
   { path: 'auditHistory.performedBy', select: 'firstname lastname role' },
 ]
 
-const snapshot = (payment) => ({ amount: payment.amount, method: payment.method, fundHolder: payment.fundHolder || 'organization', paymentParts: effectivePaymentParts(payment), cashSession: payment.cashSession || null, paymentDate: payment.paymentDate, note: payment.note || '' })
+const snapshot = (payment) => ({ amount: payment.amount, method: payment.method, fundHolder: payment.fundHolder || 'organization', paymentParts: effectivePaymentParts(payment), cashSession: payment.cashSession || null, paymentDate: payment.paymentDate, paymentPeriod: payment.depositPeriod || undefined, note: payment.note || '' })
 
 const effectivePaymentDate = (payment) => payment.paymentDate || payment.createdAt
 
@@ -101,7 +103,7 @@ class PaymentController {
         const nextPeriod = `${month === 12 ? year + 1 : year}-${String(month === 12 ? 1 : month + 1).padStart(2, '0')}`
         const periodEnd = new Date(`${nextPeriod}-01T00:00:00+05:00`)
         const periodDate = { $gte: periodStart, $lt: periodEnd }
-        filter.$and = [...(filter.$and || []), { $or: [{ paymentPurpose: { $ne: 'deposit' }, 'allocations.installment': { $in: periodInstallments.map((item) => item._id) } }, { paymentPurpose: 'deposit', $or: [{ paymentDate: periodDate }, { paymentDate: { $exists: false }, createdAt: periodDate }] }] }]
+        filter.$and = [...(filter.$and || []), { $or: [{ paymentPurpose: { $ne: 'deposit' }, 'allocations.installment': { $in: periodInstallments.map((item) => item._id) } }, { paymentPurpose: 'deposit', $or: [{ depositPeriod: period }, { depositPeriod: { $in: ['', null] }, $or: [{ paymentDate: periodDate }, { paymentDate: { $exists: false }, createdAt: periodDate }] }] }] }]
       }
       filter.$and = [...(filter.$and || []), { $or: [{ contract: { $in: financialContractIds } }, { paymentPurpose: 'deposit', student: { $in: financialStudentIds } }] }]
       const needle = String(search).trim().toLowerCase()
@@ -151,12 +153,11 @@ class PaymentController {
         GeneralSetting.findOne({ key: 'general' }).lean(),
       ])
       const installments = await ContractInstallment.find({ contract: { $in: contracts.map((item) => item._id) } }).sort({ dueDate: 1 }).lean()
-      const depositRows = await Payment.aggregate([{ $match: { paymentPurpose: 'deposit', status: { $ne: 'cancelled' }, cancelledAt: null, student: { $in: contracts.map((item) => item.student?._id).filter(Boolean) } } }, { $group: { _id: '$student', paid: { $sum: '$amount' } } }])
-      const depositPaidByStudent = new Map(depositRows.map((row) => [row._id.toString(), row.paid]))
+      const states = await depositStates(contracts)
       const depositAmount = Number(settings?.depositAmount || 0)
       const byContract = new Map()
       installments.forEach((item) => { const key = item.contract.toString(); if (!byContract.has(key)) byContract.set(key, []); byContract.get(key).push(item) })
-      const options = contracts.map((contract) => { const depositPaid = depositPaidByStudent.get(contract.student?._id?.toString()) || 0; const effectiveDepositAmount = contractDepositAmount(contract, depositAmount); return { ...contract, installments: byContract.get(contract._id.toString()) || [], balance: (byContract.get(contract._id.toString()) || []).reduce((sum, item) => sum + Math.max(0, item.amount - item.paidAmount), 0), depositAmount: effectiveDepositAmount, depositPaid, depositBalance: Math.max(0, effectiveDepositAmount - depositPaid) } })
+      const options = contracts.map((contract) => ({ ...contract, installments: byContract.get(contract._id.toString()) || [], balance: (byContract.get(contract._id.toString()) || []).reduce((sum, item) => sum + Math.max(0, item.amount - item.paidAmount), 0), ...states.get(String(contract._id)) }))
       return ApiResponse.ok(res, { contracts: options, depositAmount })
     } catch (error) { return next(error) }
   }
@@ -248,10 +249,14 @@ class PaymentController {
       const debt = dueInstallments.reduce((sum, item) => sum + Math.max(0, item.amount - item.paidAmount), 0)
       const upcoming = activeInstallments.filter((item) => new Date(item.dueDate) > todayEnd).reduce((sum, item) => sum + Math.max(0, item.amount - item.paidAmount), 0)
       const overdue = activeInstallments.reduce((sum, item) => sum + (new Date(item.dueDate) < todayStart ? Math.max(0, item.amount - item.paidAmount) : 0), 0)
-      const settings = await GeneralSetting.findOne({ key: 'general' }).lean()
-      const depositAmount = studentDepositAmount(contracts.filter((contract) => contract.status === 'active'), settings?.depositAmount)
-      const depositPaid = payments.filter((payment) => payment.paymentPurpose === 'deposit' && !payment.cancelledAt && payment.status !== 'cancelled').reduce((sum, payment) => sum + payment.amount, 0)
-      return ApiResponse.ok(res, { contracts, installments: sortedInstallments, payments, summary: { total, paid, debt, overdue, upcoming, paymentCount: payments.filter((payment) => !payment.cancelledAt && payment.status !== 'cancelled').length, depositAmount, depositPaid, depositDebt: Math.max(0, depositAmount - depositPaid) } })
+      const states = await depositStates(contracts)
+      const depositAmount = contracts.filter((contract) => contract.status === 'active').reduce((sum, contract) => sum + states.get(String(contract._id)).depositAmount, 0)
+      const allStates = [...states.values()]
+      const depositPaid = allStates.reduce((sum, state) => sum + state.depositPaid, 0)
+      const depositRefunded = allStates.reduce((sum, state) => sum + state.depositRefunded, 0)
+      const depositDebt = contracts.filter((contract) => contract.status === 'active').reduce((sum, contract) => sum + states.get(String(contract._id)).depositRemaining, 0)
+      const refunds = await DepositRefund.find({ student: req.params.studentId }).populate('refundedBy cancelledBy auditHistory.performedBy', 'firstname lastname role').sort({ refundDate: -1 })
+      return ApiResponse.ok(res, { contracts: contracts.map((contract) => ({ ...contract, ...states.get(String(contract._id)) })), installments: sortedInstallments, payments, refunds, summary: { total, paid, debt, overdue, upcoming, paymentCount: payments.filter((payment) => !payment.cancelledAt && payment.status !== 'cancelled').length, depositAmount, depositPaid, depositRefunded, depositHeld: Math.max(0, depositPaid - depositRefunded), depositDebt } })
     } catch (error) { return next(error) }
   }
 
@@ -262,17 +267,17 @@ class PaymentController {
       const paymentDate = parsePaymentDate(req.body.paymentDate)
       if (!paymentDate) return ApiResponse.badRequest(res, 'To‘lov sanasini tanlang')
       const paymentPurpose = req.body.paymentPurpose === 'deposit' ? 'deposit' : 'contract'
-      if (paymentPurpose === 'contract' && !mongoose.isValidObjectId(contractId)) return ApiResponse.badRequest(res, 'Shartnomani tanlang')
-      if (paymentPurpose === 'contract' && !mongoose.isValidObjectId(installmentId)) return ApiResponse.badRequest(res, 'To‘lov oyini tanlang')
+      if (!mongoose.isValidObjectId(contractId)) return ApiResponse.badRequest(res, 'Shartnomani tanlang')
+      if (!mongoose.isValidObjectId(installmentId)) return ApiResponse.badRequest(res, 'To‘lov oyini tanlang')
       let paymentParts
       try { paymentParts = buildPaymentParts(req.body, req.employee.role) } catch (error) { return ApiResponse.badRequest(res, error.message) }
       const amount = paymentPartsTotal(paymentParts)
       const method = paymentMethodValue(paymentParts)
       const fundHolder = paymentFundHolderValue(paymentParts)
       const contract = mongoose.isValidObjectId(contractId) ? await StudentContract.findById(contractId) : null
-      const studentId = paymentPurpose === 'deposit' ? (mongoose.isValidObjectId(req.body.student) ? req.body.student : contract?.student) : contract?.student
+      const studentId = contract?.student
       if (!mongoose.isValidObjectId(studentId)) return ApiResponse.badRequest(res, 'Talabani tanlang')
-      if (paymentPurpose === 'contract' && !contract) return ApiResponse.notFound(res, 'Shartnoma topilmadi')
+      if (!contract) return ApiResponse.notFound(res, 'Shartnoma topilmadi')
       if (contract?.status === 'cancelled') return ApiResponse.badRequest(res, 'Bekor qilingan shartnoma uchun to‘lov qabul qilinmaydi')
       let payment
       let cashSession = null
@@ -281,9 +286,11 @@ class PaymentController {
         if (paymentPurpose === 'contract' && !installment) throw Object.assign(new Error('Tanlangan to‘lov davri topilmadi'), { paymentValidation: true })
         let balance
         if (paymentPurpose === 'deposit') {
-          const settings = await GeneralSetting.findOne({ key: 'general' }).session(session).lean()
-          const [depositRow] = await Payment.aggregate([{ $match: { student: new mongoose.Types.ObjectId(studentId), paymentPurpose: 'deposit', status: { $ne: 'cancelled' }, cancelledAt: null } }, { $group: { _id: null, paid: { $sum: '$amount' } } }]).session(session)
-          balance = Math.max(0, contractDepositAmount(contract, settings?.depositAmount) - Number(depositRow?.paid || 0))
+          const locked = await lockDeposit(contract._id, session)
+          if (locked.status !== 'active' || !locked.depositEnabled) throw depositError('Bu shartnomada deposit yoqilmagan', 400)
+          const totals = await depositTotals(locked._id, session)
+          balance = Math.max(0, contractDepositAmount(locked) - totals.paid)
+          contract.depositPeriod = await depositPeriod(locked._id, installmentId, session)
         } else balance = Math.max(0, installment.amount - installment.paidAmount)
         if (amount > balance) throw Object.assign(new Error(`Maksimal to‘lov: ${balance.toLocaleString('uz-UZ')} so‘m`), { paymentValidation: true })
         if (paymentParts.some((part) => part.fundHolder === 'cashier')) {
@@ -294,7 +301,7 @@ class PaymentController {
           )
         }
         if (installment) { installment.paidAmount += amount; installment.status = installment.paidAmount >= installment.amount ? 'paid' : 'partial'; await installment.save({ session }) }
-        ;[payment] = await Payment.create([{ student: studentId, contract: contract?._id || null, paymentPurpose, amount, method, fundHolder, paymentParts, paymentDate, note, receivedBy: req.employee._id, cashSession: cashSession?._id || null, allocations: installment ? [{ installment: installment._id, amount }] : [], auditHistory: [{ action: 'created', performedBy: req.employee._id, after: { amount, method, fundHolder, paymentParts, paymentDate, note } }] }], { session })
+        ;[payment] = await Payment.create([{ student: studentId, contract: contract?._id || null, paymentPurpose, depositPeriod: paymentPurpose === 'deposit' ? contract.depositPeriod : '', amount, method, fundHolder, paymentParts, paymentDate, note, receivedBy: req.employee._id, cashSession: cashSession?._id || null, allocations: installment ? [{ installment: installment._id, amount }] : [], auditHistory: [{ action: 'created', performedBy: req.employee._id, after: { amount, method, fundHolder, paymentParts, paymentDate, paymentPeriod: contract.depositPeriod || undefined, note } }] }], { session })
       })
       await payment.populate(paymentPopulate); this.emit(req, 'created', payment)
       if (cashSession) req.app.get('io')?.emit('cash-sessions:changed', { action: 'payment-created', cashierId: req.employee.id })
@@ -333,9 +340,14 @@ class PaymentController {
         const installmentChanged = !isDeposit && oldInstallment.id !== installment.id
         let available
         if (isDeposit) {
-          const settings = await GeneralSetting.findOne({ key: 'general' }).session(session).lean()
-          const [depositRow] = await Payment.aggregate([{ $match: { _id: { $ne: payment._id }, student: payment.student, paymentPurpose: 'deposit', status: { $ne: 'cancelled' }, cancelledAt: null } }, { $group: { _id: null, paid: { $sum: '$amount' } } }]).session(session)
-          available = Math.max(0, contractDepositAmount(await StudentContract.findById(payment.contract).session(session), settings?.depositAmount) - Number(depositRow?.paid || 0))
+          const locked = await lockDeposit(payment.contract, session)
+          const totals = await depositTotals(locked._id, session, { excludePayment: payment._id })
+          if (totals.paid + amount < totals.refunded) throw depositError('Qaytarilgan depositdan kam to‘lov qoldirib bo‘lmaydi. Avval qaytarishni tahrirlang yoki bekor qiling')
+          available = Math.max(0, contractDepositAmount(locked) - totals.paid)
+          // An existing receipt can still be corrected after the policy is disabled.
+          if (!locked.depositEnabled) available = Math.max(payment.amount, totals.refunded - totals.paid)
+          if (req.body.installment) payment.depositPeriod = await depositPeriod(locked._id, req.body.installment, session)
+          else if (!payment.depositPeriod) throw depositError('Deposit uchun shartnoma ichidagi oyni tanlang', 400)
         } else available = Math.max(0, installment.amount - installment.paidAmount) + (installmentChanged ? 0 : allocation.amount)
         if (amount > available) throw Object.assign(new Error(`Maksimal to‘lov: ${available.toLocaleString('uz-UZ')} so‘m`), { paymentValidation: true })
         if (installment) {
@@ -381,6 +393,11 @@ class PaymentController {
         // their original recorded date when a cancellation saves the row.
         payment.paymentDate ||= payment.createdAt
         before = snapshot(payment)
+        if (payment.paymentPurpose === 'deposit') {
+          const locked = await lockDeposit(payment.contract, session)
+          const totals = await depositTotals(locked._id, session, { excludePayment: payment._id })
+          if (totals.paid < totals.refunded) throw depositError('Bu deposit qaytarilgan. Avval qaytarishni bekor qiling yoki tahrirlang')
+        }
         for (const allocation of payment.allocations) {
           const installment = await ContractInstallment.findById(allocation.installment).session(session)
           if (installment) { installment.paidAmount = Math.max(0, installment.paidAmount - allocation.amount); installment.status = installment.paidAmount <= 0 ? 'unpaid' : installment.paidAmount >= installment.amount ? 'paid' : 'partial'; await installment.save({ session }) }

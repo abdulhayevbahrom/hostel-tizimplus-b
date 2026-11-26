@@ -73,6 +73,7 @@ app.use('/api/complaints', complaintRouter)
 
 app.use((_req, res) => ApiResponse.notFound(res, 'API manzili topilmadi'))
 app.use((error, _req, res, _next) => {
+  if (error.paymentValidation) return ApiResponse.send(res, error.status || 400, null, error.message)
   if (error instanceof RoomBedError) return ApiResponse.send(res, error.status, null, error.message)
   console.error(error)
   if (error?.code === 11000) {

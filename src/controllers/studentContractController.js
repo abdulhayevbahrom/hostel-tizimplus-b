@@ -13,6 +13,7 @@ import { periodKeyInTashkent, tashkentDayStart } from "../utils/paymentTime.js";
 import { reserveRoomBed } from "../services/roomBeds.js";
 import { recordId } from "../utils/roomBeds.js";
 import { cancelledReportPeriod } from "../utils/cancelledReportPeriod.js";
+import { applyDepositPolicy, lockDeposit, validateDepositPolicy } from "../services/deposits.js";
 
 class StudentContractController {
   cleanPayload(body) {
@@ -25,8 +26,9 @@ class StudentContractController {
       endDate: body.endDate,
       paymentType: body.paymentType || "monthly",
       paymentAmount: Number(body.paymentAmount),
-      depositEnabled: (body.paymentType || "monthly") === "daily" && body.depositEnabled === true,
-      depositAmount: (body.paymentType || "monthly") === "daily" && body.depositEnabled === true
+      depositEnabled: body.depositEnabled === true,
+      depositPolicyVersion: 1,
+      depositAmount: body.depositEnabled === true
         ? Number(body.depositAmount)
         : 0,
       status: body.status || "active",
@@ -379,30 +381,43 @@ class StudentContractController {
           res,
           "Tugash sanasi boshlanish sanasidan keyin bo‘lishi kerak",
         );
-      if (payload.status !== "cancelled")
-        payload.status = new Date(payload.endDate) < tashkentDayStart(new Date()) ? "completed" : "active";
       if (!mongoose.isValidObjectId(payload.student))
         return ApiResponse.badRequest(res, "Talabani to‘g‘ri tanlang");
       const current = await StudentContract.findById(req.params.id);
       if (!current) return ApiResponse.notFound(res, "Shartnoma topilmadi");
+      const endIsPast = new Date(payload.endDate) < tashkentDayStart(new Date());
+      if (current.status !== "active" && req.body.status === "active" && endIsPast)
+        return ApiResponse.badRequest(res, "Faollashtirish uchun tugash sanasi bugun yoki kelajakda bo‘lishi kerak");
+      if (payload.status !== "cancelled") payload.status = endIsPast ? "completed" : "active";
       const { contract, conflict } = await mongoose.connection.transaction(async (session) => {
         const existing = await StudentContract.findById(req.params.id).session(session);
         if (!existing) return {};
         const datesChanged =
           existing.startDate.getTime() !== new Date(payload.startDate).getTime() ||
           existing.endDate.getTime() !== new Date(payload.endDate).getTime();
-        const isCancelled = existing.status === "cancelled";
+        const reactivating = existing.status !== "active" && payload.status === "active"
+          && (existing.status !== "cancelled" || req.body.status === "active");
+        const isCancelled = existing.status === "cancelled" && !reactivating;
         const changes = isCancelled ? {
           startDate: payload.startDate,
           endDate: payload.endDate,
           ...calculateContractPayment(payload.startDate, payload.endDate, existing.paymentType, existing.paymentAmount),
         } : {
           ...payload,
-          cancelledAt: payload.status === "cancelled" ? new Date() : existing.cancelledAt,
+          cancelledAt: payload.status === "cancelled" ? existing.cancelledAt || new Date()
+            : reactivating ? null : existing.cancelledAt,
         };
+        if (!isCancelled && (Boolean(existing.depositEnabled) !== changes.depositEnabled || Number(existing.depositAmount || 0) !== changes.depositAmount)) {
+          const locked = await lockDeposit(existing._id, session);
+          await validateDepositPolicy(locked, changes.depositEnabled, changes.depositAmount, session);
+          applyDepositPolicy(locked, changes.depositEnabled, changes.depositAmount, req.employee?._id);
+          changes.depositHistory = locked.depositHistory;
+          changes.depositCancelledAt = locked.depositCancelledAt;
+        }
         if (!isCancelled) {
           if (changes.bedNumber == null && String(existing.room) === String(changes.room)) changes.bedNumber = existing.bedNumber;
-          await reserveRoomBed(changes, session, { excludeContractId: existing._id, previousRoom: existing.room });
+          await reserveRoomBed(changes, session, { excludeContractId: existing._id,
+            previousRoom: existing.status === "active" ? existing.room : null });
         }
         const paymentTypeChanged = !isCancelled && existing.paymentType !== payload.paymentType;
         const rateChanged = !isCancelled && existing.paymentAmount !== payload.paymentAmount;
@@ -425,7 +440,7 @@ class StudentContractController {
           changes,
           { new: true, runValidators: true, session },
         ).populate("room", "roomNumber block floor");
-        if (datesChanged || paymentTypeChanged || rateChanged) await this.updateInstallments(updated, session);
+        if (datesChanged || paymentTypeChanged || rateChanged || reactivating) await this.updateInstallments(updated, session);
         return { contract: updated };
       });
       if (conflict) return ApiResponse.conflict(res, conflict);

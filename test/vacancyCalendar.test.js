@@ -64,7 +64,7 @@ test('each occupied slot identifies that day’s resident and contract through d
   const result = calculate({ rooms: [{ ...room, capacity: 3 }], contracts: [first, continuing, replacement] })
   const occupants = (day) => result.daily[day - 1].rooms[0].bedOccupants
   const expected = (item) => ({ studentId: item.student._id, fullName: item.student.fullName,
-    startDate: item.startDate, endDate: item.endDate })
+    startDate: item.startDate, endDate: item.endDate, status: item.status, cancelledAt: null, previousRoom: null, currentRoom: null })
   assert.deepEqual(occupants(1), [expected(first), expected(continuing), null])
   assert.deepEqual(occupants(3), [null, expected(continuing), null])
   assert.deepEqual(occupants(4), [expected(replacement), expected(continuing), null])

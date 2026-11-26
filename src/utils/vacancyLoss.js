@@ -1,12 +1,13 @@
 import { parsePaymentDate } from './paymentTime.js'
 import { isActiveRoomStay } from './roomBeds.js'
+import { vacancyOccupantContexts } from './vacancyOccupants.js'
 
 const DAY_MS = 86400000
 const id = (value) => String(value?._id ?? value)
 const ended = (record, end) => record?.isDeleted && (!record.deletedAt || new Date(record.deletedAt) <= end)
 
 // One empty bed for one calendar day is one vacant bed-day.
-export function vacancyLoss({ period, todayKey, dailyRate, rooms, contracts }) {
+export function vacancyLoss({ period, todayKey, dailyRate, rooms, contracts, roomMoves = [] }) {
   const year = Number(period.slice(0, 4))
   const rate = Number(dailyRate || 0)
   const contractsByRoom = new Map()
@@ -18,6 +19,7 @@ export function vacancyLoss({ period, todayKey, dailyRate, rooms, contracts }) {
   const eligibleRooms = rooms.filter((room) => room.status === 'available')
   const todayStart = parsePaymentDate(todayKey)
   const todayEnd = new Date(todayStart.getTime() + DAY_MS - 1)
+  const occupantContexts = vacancyOccupantContexts({ contracts, rooms, roomMoves, todayStart, todayEnd })
   const occupiedOnDay = (room, start, end) => {
     const occupied = new Map()
     for (const contract of contractsByRoom.get(id(room)) || []) {
@@ -84,7 +86,7 @@ export function vacancyLoss({ period, todayKey, dailyRate, rooms, contracts }) {
             bedOccupants: slots.map((studentId) => {
               const contract = occupied.get(studentId)
               return contract ? { studentId, fullName: contract.student.fullName || '',
-                startDate: contract.startDate, endDate: contract.endDate } : null
+                startDate: contract.startDate, endDate: contract.endDate, ...occupantContexts.get(contract) } : null
             }) })
         }
       }

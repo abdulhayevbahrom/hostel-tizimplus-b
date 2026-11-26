@@ -1,8 +1,10 @@
 import { GeneralSetting } from '../models/GeneralSetting.js'
+import { AuditLog } from '../models/AuditLog.js'
 import { vacancyLoss } from '../utils/vacancyLoss.js'
 import { Attendance } from '../models/Attendance.js'
 import { ContractInstallment } from '../models/ContractInstallment.js'
 import { Employee } from '../models/Employee.js'
+import { DepositRefund } from '../models/DepositRefund.js'
 import { Expense } from '../models/Expense.js'
 import { Fine } from '../models/Fine.js'
 import { FinePayment } from '../models/FinePayment.js'
@@ -55,7 +57,8 @@ const sumExpensesByDate = async (start, end) => {
     ...expenseDateStages({}, start, end),
     { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
   ])
-  return { amount: result?.total || 0, count: result?.count || 0 }
+  const [refunds] = await DepositRefund.aggregate([{ $match: { status: 'active', refundDate: { $gte: start, ...(end ? { $lt: end } : {}) } } }, { $group: { _id: null, amount: { $sum: '$amount' }, count: { $sum: 1 } } }])
+  return { amount: (result?.total || 0) + (refunds?.amount || 0), count: (result?.count || 0) + (refunds?.count || 0) }
 }
 
 const recentPeriods = (now, count = 6) => Array.from({ length: count }, (_, index) => {
@@ -176,10 +179,16 @@ class DashboardController {
           .lean() : [],
         Room.find().setOptions({ withDeleted: true }).select('roomNumber block floor capacity status createdAt isDeleted deletedAt').lean(),
         StudentContract.find({ $or: [{ startDate: { $lt: nextYearStart }, endDate: { $gte: yearStart } }, { startDate: { $lte: todayEndInTashkent }, endDate: { $gte: tashkentDayStart(now) } }] })
-          .setOptions({ withDeleted: true }).select('student room bedNumber startDate endDate status cancelledAt isDeleted deletedAt')
+          .setOptions({ withDeleted: true }).select('student room bedNumber startDate endDate status cancelledAt createdAt isDeleted deletedAt')
           .populate({ path: 'student', select: 'fullName isDeleted deletedAt', options: { withDeleted: true } }).lean(),
         GeneralSetting.findOne({ key: 'general' }).select('vacantBedDailyRate').lean(),
       ])
+
+      const vacancyRoomMoves = vacancyContracts.length ? await AuditLog.find({ entityType: 'contract',
+        entityId: { $in: vacancyContracts.map((contract) => String(contract._id)) },
+        'oldValue.room': { $exists: true },
+        $or: [{ 'newValue.contract.room': { $exists: true } }, { 'newValue.room': { $exists: true } }],
+      }).select('entityId oldValue.room oldValue.bedNumber newValue.contract.room newValue.room createdAt').lean() : []
 
       const activeStudentIds = new Set(activeContracts.map((item) => item.student.toString()))
       const occupiedByRoom = new Map()
@@ -205,6 +214,9 @@ class DashboardController {
       const attendanceSummary = { total: activeStudentIds.size, present: 0, absent: 0, late: 0, unmarked: 0 }
       attendance.forEach((item) => { attendanceSummary[item.status] += 1 })
       attendanceSummary.unmarked = Math.max(0, attendanceSummary.total - attendance.length)
+      const refundTrend = await DepositRefund.aggregate([{ $match: { status: 'active', refundDate: { $gte: new Date(now.getFullYear(), now.getMonth() - 5, 1) } } }, { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$refundDate', timezone: TASHKENT_TIME_ZONE } }, amount: { $sum: '$amount' } } }])
+      const dailyRefunds = await DepositRefund.aggregate([{ $match: { status: 'active', refundDate: { $gte: monthStart, $lt: monthEnd } } }, { $group: { _id: { $dayOfMonth: { date: '$refundDate', timezone: TASHKENT_TIME_ZONE } }, amount: { $sum: '$amount' } } }])
+      for (const [rows, refunds] of [[expenseTrend, refundTrend], [dailyExpenses, dailyRefunds]]) refunds.forEach((row) => { const match = rows.find((item) => item._id === row._id); if (match) match.amount += row.amount; else rows.push(row) })
       const salaryFund = employees.reduce((sum, item) => sum + Number(item.salary || 0), 0)
       const totalIncome = income.amount + monthlyFineIncome.amount
       const totalIncomeCount = income.count + monthlyFineIncome.count
@@ -257,7 +269,7 @@ class DashboardController {
         trends,
         dailyTrends,
         studentExpenses,
-        vacancyLoss: vacancyLoss({ period: monthKey, todayKey: todayInTashkent, dailyRate: generalSettings?.vacantBedDailyRate, rooms: vacancyRooms, contracts: vacancyContracts }),
+        vacancyLoss: vacancyLoss({ period: monthKey, todayKey: todayInTashkent, dailyRate: generalSettings?.vacantBedDailyRate, rooms: vacancyRooms, contracts: vacancyContracts, roomMoves: vacancyRoomMoves }),
         yearlyStudentCounts: yearlyStudentCounts(selectedYear, todayInTashkent, yearlyResidents),
         paymentMethods: mergeMethods(paymentMethods, finePaymentMethods),
         dailyPaymentMethods: mergeMethods(dailyPaymentMethods, dailyFinePaymentMethods),

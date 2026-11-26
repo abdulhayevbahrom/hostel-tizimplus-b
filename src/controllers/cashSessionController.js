@@ -2,6 +2,7 @@ import mongoose from 'mongoose'
 import { CashSession } from '../models/CashSession.js'
 import { Notification } from '../models/Notification.js'
 import { Payment } from '../models/Payment.js'
+import { DepositRefund } from '../models/DepositRefund.js'
 import { ApiResponse } from '../utils/response.js'
 import { unwindPaymentParts } from '../utils/paymentParts.js'
 
@@ -71,6 +72,8 @@ class CashSessionController {
       ])
       const pendingAmount = pendingSessions.reduce((sum, item) => sum + item.expectedAmount, 0)
       const centralBreakdown = { ...organizationPayments.breakdown }
+      const depositRefunds = await DepositRefund.aggregate([{ $match: { status: 'active' } }, { $group: { _id: '$method', amount: { $sum: '$amount' } } }])
+      depositRefunds.forEach((refund) => { if (methods.includes(refund._id)) centralBreakdown[refund._id] -= refund.amount })
       approvedTransfers.forEach((transfer) => {
         if (!transfer.sourceSession) centralBreakdown.cash += Number(transfer.expectedAmount || 0)
         else methods.forEach((method) => { centralBreakdown[method] += Number(transfer.breakdown?.[method] || 0) })

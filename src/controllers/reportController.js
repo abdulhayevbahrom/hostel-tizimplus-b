@@ -1,3 +1,4 @@
+import { DepositRefund } from '../models/DepositRefund.js'
 import { Expense } from '../models/Expense.js'
 import { Employee } from '../models/Employee.js'
 import { Fine } from '../models/Fine.js'
@@ -51,6 +52,9 @@ class ReportController {
         this.details({ dateMatch, period }),
       ])
 
+      const refundRows = await aggregateByDay(DepositRefund, { status: 'active', refundDate: dateMatch }, 'refundDate')
+      refundRows.forEach((row) => { const match = expenseRows.find((expense) => expense._id === row._id); if (match) { match.amount += row.amount; match.count += row.count } else expenseRows.push(row) })
+      if (refundRows.length) categories.push({ _id: 'Deposit qaytarish', amount: total(refundRows), count: refundRows.reduce((sum, row) => sum + row.count, 0) })
       const incomeMap = asMap(incomeRows)
       const expenseMap = asMap(expenseRows)
       const salaryMap = asMap(salaryRows)
@@ -87,6 +91,9 @@ class ReportController {
         this.details({ dateMatch, periodMatch }),
       ])
 
+      const refundRows = await aggregateByMonth(DepositRefund, { status: 'active', refundDate: dateMatch }, 'refundDate')
+      refundRows.forEach((row) => { const match = expenseRows.find((expense) => expense._id === row._id); if (match) { match.amount += row.amount; match.count += row.count } else expenseRows.push(row) })
+      if (refundRows.length) categories.push({ _id: 'Deposit qaytarish', amount: total(refundRows), count: refundRows.reduce((sum, row) => sum + row.count, 0) })
       const incomeMap = asMap(incomeRows)
       const expenseMap = asMap(expenseRows)
       const salaryMap = asMap(salaryRows)

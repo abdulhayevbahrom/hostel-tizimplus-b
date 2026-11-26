@@ -23,6 +23,7 @@ const paymentSchema = new mongoose.Schema({
   student: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true, index: true },
   contract: { type: mongoose.Schema.Types.ObjectId, ref: 'StudentContract', default: null, index: true },
   paymentPurpose: { type: String, enum: ['contract', 'deposit'], default: 'contract', index: true },
+  depositPeriod: { type: String, default: '', match: /^(|\d{4}-(0[1-9]|1[0-2]))$/ },
   amount: { type: Number, required: true, min: 1 },
   method: { type: String, enum: ['cash', 'card', 'bank', 'online', 'mixed'], required: true, index: true },
   fundHolder: { type: String, enum: ['cashier', 'organization', 'mixed'], default: 'organization', index: true },
