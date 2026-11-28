@@ -118,7 +118,7 @@ test('migration defaults to a dry run and writes missing bed numbers transaction
   assert.equal(writes.length, 1)
 })
 
-test('startup migration skips conflicting rooms and still numbers healthy rooms, while the CLI remains strict', async (t) => {
+test('explicit migration can skip conflicting rooms and still number healthy rooms, while the CLI remains strict', async (t) => {
   const conflictRoom = { ...room, _id: new mongoose.Types.ObjectId(), roomNumber: '3', capacity: 1 }
   const conflictContracts = [stay(new mongoose.Types.ObjectId()), stay(new mongoose.Types.ObjectId())]
   const healthy = stay(new mongoose.Types.ObjectId())

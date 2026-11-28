@@ -56,6 +56,35 @@ test('editing a current contract retains its own bed without treating itself as 
   assert.equal(changes.bedNumber, 3)
 })
 
+test('cancelling a contract immediately frees its bed and notifies the room views while preserving history', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-28T07:00:00Z') })
+  const existing = current()
+  const occupant = { ...existing, student: { _id: studentId } }
+  bookingMocks(t, [occupant])
+  t.mock.method(StudentContract, 'findById', () => query(existing))
+  t.mock.method(StudentContract, 'findByIdAndUpdate', (_id, changes) => {
+    Object.assign(existing, changes)
+    occupant.status = existing.status
+    return query(existing)
+  })
+  t.mock.method(Room, 'findById', async () => room)
+  const availability = async () => {
+    const res = response()
+    await roomController.beds({ params: { id: String(roomId) }, query: {} }, res, (error) => { throw error })
+    return res.body.data.availableBeds
+  }
+  assert.deepEqual(await availability(), [1, 2, 4])
+  const events = [], req = request({ ...payload, status: 'cancelled' }), res = response()
+  req.app = { get: () => ({ emit: (...args) => events.push(args) }) }
+  await studentContractController.update(req, res, (error) => { throw error })
+  assert.equal(res.code, 200)
+  assert.equal(existing.status, 'cancelled')
+  assert.ok(existing.cancelledAt)
+  assert.equal(existing.bedNumber, 3)
+  assert.deepEqual(await availability(), [1, 2, 3, 4])
+  assert.deepEqual(events.map(([name]) => name), ['student-contracts:changed', 'rooms:changed'])
+})
+
 test('extending dates cannot overlap another resident on the same bed', async (t) => {
   bookingMocks(t, [{ _id: new mongoose.Types.ObjectId(), student: { _id: new mongoose.Types.ObjectId() },
     bedNumber: 3, startDate: '2027-01-01', endDate: '2027-02-01', status: 'active' }])

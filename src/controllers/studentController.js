@@ -245,8 +245,6 @@ class StudentController {
           filter._id = visibleStudentFilter._id
         }
       }
-      const limit = 25
-      const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1)
       const matchingStudentIds = await Student.distinct('_id', filter)
       const statisticsContractIds = await StudentContract.distinct('_id', {
         student: { $in: matchingStudentIds },
@@ -315,6 +313,9 @@ class StudentController {
         : matchingStudentIds
       if (paymentStatus) filter.$and = [...(filter.$and || []), { _id: { $in: filteredStudentIds } }]
       const total = filteredStudentIds.length
+      const exportAll = req.query.export === '1'
+      const limit = exportAll ? Math.max(total, 1) : 25
+      const page = exportAll ? 1 : Math.max(1, Number.parseInt(req.query.page, 10) || 1)
       const totalPages = Math.max(1, Math.ceil(total / limit))
       const currentPage = Math.min(page, totalPages)
       const pageRows = await Student.aggregate([

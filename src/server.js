@@ -5,7 +5,6 @@ import { app } from './app.js'
 import { connectDatabase } from './config/db.js'
 import { createContractExpiryNotification, createDebtorDeadlineNotification, scheduleDailyContractSync, syncContractStatuses } from './utils/contractStatus.js'
 import { normalizeStoredPhoneNumbers } from './utils/normalizePhoneNumbers.js'
-import { migrateLegacyRoomBeds } from './services/roomBeds.js'
 import { StudentContract } from './models/StudentContract.js'
 import { Room } from './models/Room.js'
 import { DebtorDeadline } from './models/DebtorDeadline.js'
@@ -30,11 +29,6 @@ try {
   await DebtorDeadline.syncIndexes()
   await AuditLog.syncIndexes()
   await syncContractStatuses()
-  if (await StudentContract.exists({ status: 'active', bedNumber: null })) {
-    const report = await migrateLegacyRoomBeds({ dryRun: false, skipConflicts: true })
-    console.log(`${report.assignedContracts} ta eski shartnomaga o‘rin raqami ajratildi`)
-    for (const conflict of report.conflicts) console.warn(conflict.message)
-  }
   await createContractExpiryNotification(io)
   await createDebtorDeadlineNotification(io)
   await registerTelegramWebhook().catch((error) => console.error(`Telegram webhook ulanmagan: ${error.message}`))
